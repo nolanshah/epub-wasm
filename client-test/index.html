@@ -5,17 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EPUB Reader</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #fff;
+            color: #111;
             min-height: 100vh;
         }
+
+        /* Icons */
+        .icon { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.5; fill: none; }
+        .icon-lg { width: 48px; height: 48px; stroke-width: 1; }
 
         /* Upload Screen */
         .upload-screen {
@@ -27,253 +27,233 @@
             padding: 2rem;
         }
         .upload-screen h1 {
-            font-size: 2rem;
+            font-size: 1.5rem;
+            font-weight: 500;
             margin-bottom: 0.5rem;
         }
         .upload-screen p {
-            color: #888;
-            margin-bottom: 2rem;
+            color: #666;
+            font-size: 0.875rem;
+            margin-bottom: 3rem;
         }
         .upload-zone {
-            border: 2px dashed #0f3460;
-            border-radius: 12px;
+            border: 1px dashed #ccc;
             padding: 3rem 4rem;
             text-align: center;
             cursor: pointer;
-            transition: all 0.2s;
-            background: #16213e;
+            transition: border-color 0.15s, background 0.15s;
         }
         .upload-zone:hover, .upload-zone.dragover {
-            border-color: #e94560;
-            background: #1a2744;
+            border-color: #111;
+            background: #fafafa;
         }
-        .upload-zone input {
-            display: none;
-        }
-        .upload-zone .icon {
-            font-size: 3rem;
-            margin-bottom: 1rem;
-        }
-        .upload-zone .text {
-            font-size: 1.1rem;
-            margin-bottom: 0.5rem;
-        }
-        .upload-zone .hint {
-            font-size: 0.85rem;
-            color: #888;
-        }
-        .loading-indicator {
-            margin-top: 2rem;
-            color: #888;
-        }
+        .upload-zone input { display: none; }
+        .upload-zone .icon-lg { color: #999; margin-bottom: 1rem; }
+        .upload-zone:hover .icon-lg { color: #111; }
+        .upload-zone .text { font-size: 0.875rem; margin-bottom: 0.25rem; }
+        .upload-zone .hint { font-size: 0.75rem; color: #999; }
+        .loading-indicator { margin-top: 2rem; color: #666; font-size: 0.875rem; }
 
         /* Reader Screen */
-        .reader-screen {
-            display: none;
-            height: 100vh;
-            flex-direction: column;
-        }
-        .reader-screen.active {
-            display: flex;
-        }
-        .upload-screen.hidden {
-            display: none;
-        }
+        .reader-screen { display: none; height: 100vh; flex-direction: column; }
+        .reader-screen.active { display: flex; }
+        .upload-screen.hidden { display: none; }
 
         .header {
-            background: #16213e;
-            padding: 0.75rem 1.5rem;
-            border-bottom: 1px solid #0f3460;
+            padding: 0 1rem;
+            height: 48px;
+            border-bottom: 1px solid #eee;
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
             gap: 0.75rem;
+            flex-shrink: 0;
         }
-        .header h1 {
-            font-size: 1.1rem;
+        .header-left { display: flex; align-items: center; gap: 0.5rem; }
+        .header-center {
+            flex: 1;
+            min-width: 0;
+            padding: 0 1rem;
+        }
+        .header-center h1 {
+            font-size: 0.8125rem;
             font-weight: 500;
-            max-width: 300px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
-        .controls {
-            display: flex;
-            gap: 0.75rem;
-            align-items: center;
-        }
-        .controls button {
-            background: #0f3460;
-            color: #eee;
-            border: none;
-            padding: 0.4rem 0.8rem;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.85rem;
-        }
-        .controls button:hover {
-            background: #e94560;
-        }
-        .controls button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .controls button.active {
-            background: #e94560;
-        }
-        .mode-toggle {
-            display: flex;
-            gap: 0.25rem;
-            background: #0f3460;
-            padding: 0.2rem;
-            border-radius: 4px;
-        }
-        .mode-toggle button {
-            background: transparent;
-            padding: 0.35rem 0.6rem;
-        }
-        .mode-toggle button.active {
-            background: #e94560;
-        }
-
-        .main {
-            display: flex;
-            flex: 1;
+        .header-center .author {
+            font-size: 0.6875rem;
+            color: #888;
             overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
+        .header-right { display: flex; align-items: center; gap: 0.5rem; }
+
+        .btn {
+            background: none;
+            color: #666;
+            border: 1px solid #ddd;
+            padding: 0.375rem 0.5rem;
+            cursor: pointer;
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.375rem;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .btn:hover { border-color: #111; color: #111; }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .btn.active { background: #111; color: #fff; border-color: #111; }
+
+        .btn-group { display: flex; }
+        .btn-group .btn { border-right: none; }
+        .btn-group .btn:last-child { border-right: 1px solid #ddd; }
+        .btn-group .btn:hover { border-right-color: #111; }
+        .btn-group .btn.active { border-color: #111; }
+
+        .section-info { font-size: 0.6875rem; color: #888; padding: 0 0.5rem; }
+        .divider { width: 1px; height: 20px; background: #eee; }
+
+        .main { display: flex; flex: 1; overflow: hidden; }
+
         .sidebar {
             width: 280px;
-            background: #16213e;
-            border-right: 1px solid #0f3460;
+            border-right: 1px solid #eee;
             overflow-y: auto;
             padding: 1rem;
             flex-shrink: 0;
+            transition: margin-left 0.2s;
+        }
+        .sidebar.hidden {
+            margin-left: -280px;
         }
         .sidebar h2 {
-            font-size: 0.8rem;
+            font-size: 0.625rem;
+            font-weight: 500;
             text-transform: uppercase;
-            color: #888;
-            margin-bottom: 0.5rem;
-            margin-top: 1rem;
+            letter-spacing: 0.05em;
+            color: #999;
+            margin-bottom: 0.75rem;
         }
-        .sidebar h2:first-child {
-            margin-top: 0;
-        }
+
         .toc-item {
-            padding: 0.35rem 0.5rem;
+            padding: 0.375rem 0;
             cursor: pointer;
-            border-radius: 4px;
-            margin-bottom: 0.15rem;
-            font-size: 0.85rem;
+            font-size: 0.8125rem;
+            color: #444;
+            transition: color 0.15s;
         }
-        .toc-item:hover {
-            background: #0f3460;
-        }
-        .toc-item.active {
-            background: #e94560;
-        }
-        .toc-children {
-            margin-left: 0.75rem;
-        }
+        .toc-item:hover { color: #111; }
+        .toc-item.active { color: #111; font-weight: 500; }
+        .toc-children { margin-left: 1rem; }
 
-        .viewer {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        #epub-container {
-            flex: 1;
-            background: #fff;
-            overflow: hidden;
-        }
-        #epub-container.single-page {
-            overflow-y: auto;
-        }
-        #epub-container iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-        .status {
-            padding: 0.4rem 1rem;
-            background: #16213e;
-            text-align: center;
-            font-size: 0.8rem;
-            color: #888;
-        }
-
-        .metadata {
-            padding-bottom: 0.75rem;
-            border-bottom: 1px solid #0f3460;
-        }
-        .metadata h3 {
-            font-size: 0.95rem;
-            margin-bottom: 0.2rem;
-        }
-        .metadata p {
-            font-size: 0.8rem;
-            color: #888;
-        }
-        .new-book-btn {
-            margin-top: 1rem;
-            width: 100%;
-            background: #0f3460 !important;
-        }
+        .viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        #epub-container { flex: 1; background: #fff; overflow: hidden; }
+        #epub-container.single-page { overflow-y: auto; }
+        #epub-container iframe { width: 100%; height: 100%; border: none; }
 
         @media (max-width: 768px) {
-            .sidebar {
-                display: none;
-            }
+            .sidebar { position: absolute; left: 0; top: 48px; bottom: 0; background: #fff; z-index: 10; }
+            .sidebar.hidden { margin-left: -280px; }
+            .header-center .author { display: none; }
         }
     </style>
 </head>
 <body>
+    <!-- SVG Icons -->
+    <svg style="display:none">
+        <symbol id="icon-upload" viewBox="0 0 24 24">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+        </symbol>
+        <symbol id="icon-folder" viewBox="0 0 24 24">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </symbol>
+        <symbol id="icon-menu" viewBox="0 0 24 24">
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+        </symbol>
+        <symbol id="icon-chapters" viewBox="0 0 24 24">
+            <line x1="8" y1="6" x2="21" y2="6"/>
+            <line x1="8" y1="12" x2="21" y2="12"/>
+            <line x1="8" y1="18" x2="21" y2="18"/>
+            <line x1="3" y1="6" x2="3.01" y2="6"/>
+            <line x1="3" y1="12" x2="3.01" y2="12"/>
+            <line x1="3" y1="18" x2="3.01" y2="18"/>
+        </symbol>
+        <symbol id="icon-scroll" viewBox="0 0 24 24">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+        </symbol>
+        <symbol id="icon-left" viewBox="0 0 24 24">
+            <polyline points="15 18 9 12 15 6"/>
+        </symbol>
+        <symbol id="icon-right" viewBox="0 0 24 24">
+            <polyline points="9 18 15 12 9 6"/>
+        </symbol>
+    </svg>
+
     <!-- Upload Screen -->
     <div class="upload-screen" id="upload-screen">
         <h1>EPUB Reader</h1>
-        <p>Client-side EPUB reader powered by Rust + WebAssembly</p>
+        <p>Client-side reader powered by Rust + WebAssembly</p>
         <div class="upload-zone" id="upload-zone">
             <input type="file" id="file-input" accept=".epub">
-            <div class="icon">📚</div>
+            <svg class="icon icon-lg"><use href="#icon-upload"/></svg>
             <div class="text">Drop an EPUB file here</div>
             <div class="hint">or click to browse</div>
         </div>
-        <div class="loading-indicator" id="loading" style="display: none;">
-            Loading WASM module...
-        </div>
+        <div class="loading-indicator" id="loading" style="display: none;">Loading...</div>
     </div>
 
     <!-- Reader Screen -->
     <div class="reader-screen" id="reader-screen">
         <div class="header">
-            <h1 id="book-title">Book Title</h1>
-            <div class="controls">
-                <div class="mode-toggle">
-                    <button id="mode-chapter" class="active" title="Chapter by chapter">📖</button>
-                    <button id="mode-single" title="Single scrollable page">📜</button>
+            <div class="header-left">
+                <button class="btn" id="toc-toggle" title="Table of Contents">
+                    <svg class="icon"><use href="#icon-menu"/></svg>
+                </button>
+                <button class="btn" id="new-book-btn" title="Open Another Book">
+                    <svg class="icon"><use href="#icon-folder"/></svg>
+                </button>
+            </div>
+            <div class="header-center">
+                <h1 id="book-title">Book Title</h1>
+                <div class="author" id="book-author">Author</div>
+            </div>
+            <div class="header-right">
+                <div class="btn-group">
+                    <button class="btn active" id="mode-chapter" title="Chapters">
+                        <svg class="icon"><use href="#icon-chapters"/></svg>
+                    </button>
+                    <button class="btn" id="mode-single" title="Scroll">
+                        <svg class="icon"><use href="#icon-scroll"/></svg>
+                    </button>
                 </div>
-                <button id="prev-btn" disabled>←</button>
-                <span id="progress">0%</span>
-                <button id="next-btn" disabled>→</button>
+                <div class="divider"></div>
+                <button class="btn" id="prev-btn" disabled>
+                    <svg class="icon"><use href="#icon-left"/></svg>
+                </button>
+                <span class="section-info"><span id="section-num">0</span> / <span id="section-total">0</span></span>
+                <button class="btn" id="next-btn" disabled>
+                    <svg class="icon"><use href="#icon-right"/></svg>
+                </button>
             </div>
         </div>
         <div class="main">
-            <div class="sidebar">
-                <div class="metadata">
-                    <h3 id="meta-title">Title</h3>
-                    <p id="meta-author">Author</p>
-                </div>
-                <button class="new-book-btn controls" id="new-book-btn">📂 Open Another Book</button>
-                <h2>Table of Contents</h2>
+            <div class="sidebar" id="sidebar">
+                <h2>Contents</h2>
                 <div id="toc"></div>
             </div>
             <div class="viewer">
                 <div id="epub-container"></div>
-                <div class="status" id="status-bar">
-                    Section <span id="section-num">0</span> of <span id="section-total">0</span>
-                </div>
             </div>
         </div>
     </div>
@@ -287,96 +267,63 @@
         let sections = [];
         let currentSection = 0;
         let viewMode = 'chapter';
+        let sidebarVisible = true;
 
-        // Initialize WASM
         async function initWasm() {
             document.getElementById('loading').style.display = 'block';
             try {
                 await init();
                 wasmReady = true;
                 document.getElementById('loading').style.display = 'none';
-                console.log('WASM initialized');
             } catch (e) {
-                document.getElementById('loading').textContent = 'Failed to load WASM: ' + e;
-                console.error('WASM init error:', e);
+                document.getElementById('loading').textContent = 'Failed to load: ' + e;
             }
         }
 
-        // Handle file upload
         async function handleFile(file) {
-            if (!wasmReady) {
-                alert('WASM module not ready yet');
-                return;
-            }
-
-            if (!file.name.endsWith('.epub')) {
-                alert('Please select an EPUB file');
-                return;
-            }
+            if (!wasmReady) { alert('Not ready yet'); return; }
+            if (!file.name.endsWith('.epub')) { alert('Please select an EPUB file'); return; }
 
             try {
                 const arrayBuffer = await file.arrayBuffer();
                 epubData = new Uint8Array(arrayBuffer);
-
                 book = new JsBook(epubData);
 
-                // Get metadata
                 const metadata = book.metadata;
                 document.getElementById('book-title').textContent = metadata.title || 'Untitled';
-                document.getElementById('meta-title').textContent = metadata.title || 'Untitled';
-                document.getElementById('meta-author').textContent = metadata.creators?.join(', ') || 'Unknown Author';
+                document.getElementById('book-author').textContent = metadata.creators?.join(', ') || 'Unknown';
 
-                // Build sections list
                 sections = [];
                 for (let i = 0; i < book.section_count; i++) {
                     const section = book.get_section(i);
-                    sections.push({
-                        index: i,
-                        href: section.href,
-                        id: section.id
-                    });
+                    sections.push({ index: i, href: section.href, id: section.id });
                 }
 
                 document.getElementById('section-total').textContent = sections.length;
-
-                // Build TOC
-                const toc = book.toc;
-                document.getElementById('toc').innerHTML = renderToc(toc);
-
-                // Show reader
+                document.getElementById('toc').innerHTML = renderToc(book.toc);
                 document.getElementById('upload-screen').classList.add('hidden');
                 document.getElementById('reader-screen').classList.add('active');
 
-                // Load first section
                 loadSection(0);
                 document.getElementById('prev-btn').disabled = false;
                 document.getElementById('next-btn').disabled = false;
-
             } catch (e) {
                 alert('Failed to load EPUB: ' + e);
-                console.error(e);
             }
         }
 
-        // Render TOC
         function renderToc(items, depth = 0) {
             if (!items || items.length === 0) return '';
             let html = depth > 0 ? '<div class="toc-children">' : '';
             for (const item of items) {
-                const href = item.href || '';
-                html += `<div class="toc-item" data-href="${href}">${item.label}</div>`;
-                if (item.children && item.children.length > 0) {
-                    html += renderToc(item.children, depth + 1);
-                }
+                html += `<div class="toc-item" data-href="${item.href || ''}">${item.label}</div>`;
+                if (item.children?.length > 0) html += renderToc(item.children, depth + 1);
             }
-            html += depth > 0 ? '</div>' : '';
-            return html;
+            return html + (depth > 0 ? '</div>' : '');
         }
 
-        // Find section by href
         function findSectionByHref(href) {
             if (!href) return null;
-
             const fragment = href.split('#')[1] || null;
             const basePath = href.split('#')[0];
             const filename = basePath.split('/').pop();
@@ -384,126 +331,82 @@
             for (let i = 0; i < sections.length; i++) {
                 const sectionHref = sections[i].href;
                 const sectionFilename = sectionHref.split('/').pop();
-
-                if (sectionHref === basePath ||
-                    sectionHref.endsWith(basePath) ||
-                    basePath.endsWith(sectionHref) ||
-                    (filename && sectionFilename === filename) ||
-                    sectionHref.includes(basePath) ||
-                    basePath.includes(sectionFilename)) {
+                if (sectionHref === basePath || sectionHref.endsWith(basePath) ||
+                    basePath.endsWith(sectionHref) || (filename && sectionFilename === filename) ||
+                    sectionHref.includes(basePath) || basePath.includes(sectionFilename)) {
                     return { index: i, fragment };
                 }
             }
             return null;
         }
 
-        // Create blob URL for resource
+        const resourceCache = new Map();
+
         function createResourceUrl(data, mimeType) {
-            const blob = new Blob([data], { type: mimeType });
-            return URL.createObjectURL(blob);
+            return URL.createObjectURL(new Blob([data], { type: mimeType }));
         }
 
-        // Get MIME type from extension
         function getMimeType(path) {
             const ext = path.split('.').pop().toLowerCase();
             const types = {
                 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
                 'gif': 'image/gif', 'svg': 'image/svg+xml', 'webp': 'image/webp',
-                'css': 'text/css', 'js': 'application/javascript',
-                'woff': 'font/woff', 'woff2': 'font/woff2', 'ttf': 'font/ttf', 'otf': 'font/otf',
-                'xhtml': 'application/xhtml+xml', 'html': 'text/html', 'xml': 'application/xml'
+                'css': 'text/css', 'woff': 'font/woff', 'woff2': 'font/woff2',
+                'ttf': 'font/ttf', 'otf': 'font/otf'
             };
             return types[ext] || 'application/octet-stream';
         }
 
-        // Resource cache for blob URLs
-        const resourceCache = new Map();
-
-        // Get resource as blob URL
         function getResourceUrl(href, basePath) {
-            // Resolve relative path
             let fullPath = href;
             if (!href.startsWith('/') && !href.includes('://')) {
                 const baseParts = basePath.split('/').filter(p => p);
-                baseParts.pop(); // Remove filename
-                const relParts = href.split('/');
-                for (const part of relParts) {
+                baseParts.pop();
+                for (const part of href.split('/')) {
                     if (part === '..') baseParts.pop();
                     else if (part !== '.') baseParts.push(part);
                 }
                 fullPath = baseParts.join('/');
             }
 
-            // Check cache
-            if (resourceCache.has(fullPath)) {
-                return resourceCache.get(fullPath);
-            }
+            if (resourceCache.has(fullPath)) return resourceCache.get(fullPath);
 
-            // Get from book
-            const data = book.get_resource(fullPath);
+            let data = book.get_resource(fullPath);
+            if (!data) data = book.get_resource(fullPath.split('/').pop());
             if (data) {
                 const url = createResourceUrl(data, getMimeType(fullPath));
                 resourceCache.set(fullPath, url);
                 return url;
             }
-
-            // Try just filename
-            const filename = fullPath.split('/').pop();
-            const dataByName = book.get_resource(filename);
-            if (dataByName) {
-                const url = createResourceUrl(dataByName, getMimeType(filename));
-                resourceCache.set(fullPath, url);
-                return url;
-            }
-
-            console.warn('Resource not found:', fullPath);
             return null;
         }
 
-        // Rewrite URLs in content
         function rewriteUrls(html, sectionHref) {
             const basePath = sectionHref;
 
-            // Rewrite src attributes
             html = html.replace(/src=["']([^"']+)["']/g, (match, url) => {
-                if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:')) {
-                    return match;
-                }
+                if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:')) return match;
                 const blobUrl = getResourceUrl(url, basePath);
                 return blobUrl ? `src="${blobUrl}"` : match;
             });
 
-            // Rewrite xlink:href for SVG images
             html = html.replace(/xlink:href=["']([^"']+)["']/g, (match, url) => {
-                if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('#')) {
-                    return match;
-                }
+                if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('#')) return match;
                 const blobUrl = getResourceUrl(url, basePath);
                 return blobUrl ? `xlink:href="${blobUrl}"` : match;
             });
 
-            // Rewrite href for stylesheets and images
             html = html.replace(/href=["']([^"']+)["']/g, (match, url) => {
-                if (url.startsWith('http') || url.startsWith('#') || url.startsWith('mailto:') || url.startsWith('blob:')) {
-                    return match;
-                }
-                if (url.endsWith('.css')) {
+                if (url.startsWith('http') || url.startsWith('#') || url.startsWith('mailto:') || url.startsWith('blob:')) return match;
+                if (url.endsWith('.css') || url.match(/\.(jpg|jpeg|png|gif|svg|webp)$/i)) {
                     const blobUrl = getResourceUrl(url, basePath);
                     return blobUrl ? `href="${blobUrl}"` : match;
                 }
-                if (url.match(/\.(jpg|jpeg|png|gif|svg|webp)$/i)) {
-                    const blobUrl = getResourceUrl(url, basePath);
-                    return blobUrl ? `href="${blobUrl}"` : match;
-                }
-                // Internal link
                 return `href="#" data-epub-href="${url}"`;
             });
 
-            // Rewrite url() in styles
             html = html.replace(/url\(["']?([^"')]+)["']?\)/g, (match, url) => {
-                if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:')) {
-                    return match;
-                }
+                if (url.startsWith('http') || url.startsWith('data:') || url.startsWith('blob:')) return match;
                 const blobUrl = getResourceUrl(url, basePath);
                 return blobUrl ? `url(${blobUrl})` : match;
             });
@@ -511,69 +414,49 @@
             return html;
         }
 
-        // Load section
         function loadSection(index, fragment = null) {
             if (index < 0 || index >= sections.length) return;
-
             currentSection = index;
             const content = book.get_section_content(index);
             const href = sections[index].href;
-
-            const rewritten = rewriteUrls(content, href);
-            displayContent(rewritten, fragment);
+            displayContent(rewriteUrls(content, href), fragment);
             updateStatus();
             highlightTocItem(href);
         }
 
-        // Load all sections for single-page mode
         function loadAllSections() {
             const container = document.getElementById('epub-container');
-            container.innerHTML = '<div style="padding:2rem;text-align:center;color:#888;">Loading all sections...</div>';
             container.classList.add('single-page');
 
             let allContent = '';
-
             for (let i = 0; i < sections.length; i++) {
                 const content = book.get_section_content(i);
                 const href = sections[i].href;
                 const rewritten = rewriteUrls(content, href);
-
                 const bodyMatch = rewritten.match(/<body[^>]*>([\s\S]*)<\/body>/i);
                 const bodyContent = bodyMatch ? bodyMatch[1] : rewritten;
-
                 const sectionId = href.split('/').pop().replace(/\.(xhtml|html)$/, '');
-                allContent += `<div id="section-${i}" data-section="${i}" class="epub-section"><a id="${sectionId}"></a>${bodyContent}</div><hr style="margin:2rem 0;border:none;border-top:1px solid #ddd;">`;
+                allContent += `<div id="section-${i}" class="epub-section"><a id="${sectionId}"></a>${bodyContent}</div><hr style="margin:2rem 0;border:none;border-top:1px solid #eee;">`;
             }
 
             displayContent(wrapInHtml(allContent), null);
-            document.getElementById('status-bar').style.display = 'none';
             document.getElementById('prev-btn').disabled = true;
             document.getElementById('next-btn').disabled = true;
         }
 
         function wrapInHtml(bodyContent) {
             return `<!DOCTYPE html><html><head><style>
-                body {
-                    font-family: Georgia, 'Times New Roman', serif;
-                    font-size: 18px;
-                    line-height: 1.8;
-                    max-width: 800px;
-                    margin: 0 auto;
-                    padding: 2rem;
-                    color: #333;
-                }
+                body { font-family: Georgia, 'Times New Roman', serif; font-size: 18px; line-height: 1.7; max-width: 680px; margin: 0 auto; padding: 2rem; color: #222; }
                 img { max-width: 100%; height: auto; }
-                /* Cover image styling - maintain aspect ratio */
                 svg { max-width: 100%; max-height: 90vh; height: auto; display: block; margin: 0 auto; }
                 svg[viewBox] { width: auto !important; height: auto !important; }
                 svg image { object-fit: contain; }
-                h1, h2, h3, h4, h5, h6 { font-family: -apple-system, sans-serif; margin-top: 1.5em; }
-                a { color: #0066cc; }
+                h1, h2, h3, h4, h5, h6 { font-family: -apple-system, sans-serif; margin-top: 1.5em; font-weight: 500; }
+                a { color: #111; }
                 .epub-section { scroll-margin-top: 20px; }
             </style></head><body>${bodyContent}</body></html>`;
         }
 
-        // Display content
         function displayContent(html, fragment) {
             const container = document.getElementById('epub-container');
 
@@ -591,7 +474,6 @@
             doc.open();
             doc.write(html);
             doc.close();
-
             doc.addEventListener('click', handleLinkClick);
 
             if (fragment) {
@@ -602,11 +484,9 @@
             }
         }
 
-        // Handle link clicks
         function handleLinkClick(e) {
             const link = e.target.closest('a[data-epub-href]');
             if (!link) return;
-
             e.preventDefault();
             const href = link.dataset.epubHref;
 
@@ -619,9 +499,8 @@
                     if (viewMode === 'chapter') {
                         loadSection(result.index, result.fragment);
                     } else {
-                        const iframe = document.querySelector('#epub-container iframe');
-                        if (iframe) {
-                            const doc = iframe.contentDocument;
+                        const doc = document.querySelector('#epub-container iframe')?.contentDocument;
+                        if (doc) {
                             const sectionEl = doc.querySelector(`#section-${result.index}`);
                             if (sectionEl) {
                                 sectionEl.scrollIntoView({ behavior: 'smooth' });
@@ -638,15 +517,11 @@
             }
         }
 
-        // Update status
         function updateStatus() {
             document.getElementById('section-num').textContent = currentSection + 1;
             document.getElementById('section-total').textContent = sections.length;
-            const progress = Math.round(((currentSection + 1) / sections.length) * 100);
-            document.getElementById('progress').textContent = progress + '%';
         }
 
-        // Highlight TOC item
         function highlightTocItem(href) {
             document.querySelectorAll('.toc-item').forEach(el => el.classList.remove('active'));
             const basePath = href.split('/').pop().split('#')[0];
@@ -658,17 +533,19 @@
             });
         }
 
-        // Set view mode
+        function toggleSidebar() {
+            sidebarVisible = !sidebarVisible;
+            document.getElementById('sidebar').classList.toggle('hidden', !sidebarVisible);
+            document.getElementById('toc-toggle').classList.toggle('active', sidebarVisible);
+        }
+
         function setViewMode(mode) {
             viewMode = mode;
             document.getElementById('mode-chapter').classList.toggle('active', mode === 'chapter');
             document.getElementById('mode-single').classList.toggle('active', mode === 'single');
-
-            const container = document.getElementById('epub-container');
-            container.classList.toggle('single-page', mode === 'single');
+            document.getElementById('epub-container').classList.toggle('single-page', mode === 'single');
 
             if (mode === 'chapter') {
-                document.getElementById('status-bar').style.display = 'block';
                 document.getElementById('prev-btn').disabled = currentSection === 0;
                 document.getElementById('next-btn').disabled = currentSection >= sections.length - 1;
                 loadSection(currentSection);
@@ -677,23 +554,22 @@
             }
         }
 
-        // Reset to upload screen
         function resetToUpload() {
-            // Clear blob URLs
             resourceCache.forEach(url => URL.revokeObjectURL(url));
             resourceCache.clear();
-
             book = null;
             epubData = null;
             sections = [];
             currentSection = 0;
-
+            viewMode = 'chapter';
             document.getElementById('reader-screen').classList.remove('active');
             document.getElementById('upload-screen').classList.remove('hidden');
             document.getElementById('epub-container').innerHTML = '';
+            document.getElementById('epub-container').classList.remove('single-page');
+            document.getElementById('mode-chapter').classList.add('active');
+            document.getElementById('mode-single').classList.remove('active');
         }
 
-        // Event listeners
         document.addEventListener('DOMContentLoaded', () => {
             initWasm();
 
@@ -701,20 +577,10 @@
             const fileInput = document.getElementById('file-input');
 
             uploadZone.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', (e) => { if (e.target.files[0]) handleFile(e.target.files[0]); });
 
-            fileInput.addEventListener('change', (e) => {
-                if (e.target.files[0]) handleFile(e.target.files[0]);
-            });
-
-            uploadZone.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                uploadZone.classList.add('dragover');
-            });
-
-            uploadZone.addEventListener('dragleave', () => {
-                uploadZone.classList.remove('dragover');
-            });
-
+            uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+            uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
             uploadZone.addEventListener('drop', (e) => {
                 e.preventDefault();
                 uploadZone.classList.remove('dragover');
@@ -724,17 +590,13 @@
             document.getElementById('toc').addEventListener('click', (e) => {
                 const item = e.target.closest('.toc-item');
                 if (!item) return;
-
-                const href = item.dataset.href;
-                const result = findSectionByHref(href);
-
+                const result = findSectionByHref(item.dataset.href);
                 if (result) {
                     if (viewMode === 'chapter') {
                         loadSection(result.index, result.fragment);
                     } else {
-                        const iframe = document.querySelector('#epub-container iframe');
-                        if (iframe) {
-                            const doc = iframe.contentDocument;
+                        const doc = document.querySelector('#epub-container iframe')?.contentDocument;
+                        if (doc) {
                             if (result.fragment) {
                                 const fragEl = doc.getElementById(result.fragment);
                                 if (fragEl) { fragEl.scrollIntoView({ behavior: 'smooth' }); return; }
@@ -746,17 +608,16 @@
                 }
             });
 
+            document.getElementById('toc-toggle').addEventListener('click', toggleSidebar);
             document.getElementById('prev-btn').addEventListener('click', () => {
                 if (viewMode === 'chapter' && currentSection > 0) loadSection(currentSection - 1);
             });
-
             document.getElementById('next-btn').addEventListener('click', () => {
                 if (viewMode === 'chapter' && currentSection < sections.length - 1) loadSection(currentSection + 1);
             });
 
             document.getElementById('mode-chapter').addEventListener('click', () => setViewMode('chapter'));
             document.getElementById('mode-single').addEventListener('click', () => setViewMode('single'));
-
             document.getElementById('new-book-btn').addEventListener('click', resetToUpload);
 
             document.addEventListener('keydown', (e) => {
