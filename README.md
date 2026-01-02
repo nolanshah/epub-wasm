@@ -8,8 +8,8 @@ A Rust-based EPUB reader library with WASM support, designed as a replacement fo
 epub-reader/
 ├── core/           # Pure Rust EPUB parsing library
 ├── renderer/       # WASM rendering layer
-├── test-app/       # CLI test server
-└── client/         # Client-side only SPA
+├── server-test/    # CLI test server
+└── client-test/    # Client-side only SPA
 ```
 
 ### Core Library (`epub-reader-core`)
@@ -88,10 +88,10 @@ cargo build --release --package epub-reader-core
 wasm-pack build --target web renderer
 
 # Build test server
-cargo build --release --package epub-reader-test
+cargo build --release --package epub-reader-server-test
 
-# Copy WASM to client directory
-cp -r renderer/pkg client/
+# Copy WASM to client-test directory
+cp -r renderer/pkg client-test/
 ```
 
 ### Run Tests
@@ -105,7 +105,7 @@ cargo test --package epub-reader-core
 A Rust-based server that loads an EPUB from disk and serves it with a web UI.
 
 ```bash
-./target/release/epub-test /path/to/book.epub
+./target/release/epub-server-test /path/to/book.epub
 ```
 
 Options:
@@ -118,16 +118,16 @@ Then open http://localhost:3000
 A static single-page app where you upload an EPUB in the browser. No server needed for EPUB processing.
 
 ```bash
-cd client
+cd client-test
 ./serve.sh
 # or: python3 -m http.server 8080
 ```
 
 Then open http://localhost:8080
 
-**Static Hosting:** Upload the `client/` directory to any static host (GitHub Pages, Netlify, S3, etc.):
+**Static Hosting:** Upload the `client-test/` directory to any static host (GitHub Pages, Netlify, S3, etc.):
 ```
-client/
+client-test/
 ├── index.html
 └── pkg/
     ├── epub_reader_renderer.js

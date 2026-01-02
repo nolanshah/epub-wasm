@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "renderer", "test-app"]
+members = ["core", "renderer", "server-test"]
 
 [workspace.package]
 version = "0.1.0"

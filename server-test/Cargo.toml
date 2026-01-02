@@ -1,10 +1,10 @@
 [package]
-name = "epub-reader-test"
+name = "epub-reader-server-test"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "epub-test"
+name = "epub-server-test"
 path = "src/main.rs"
 
 [dependencies]
