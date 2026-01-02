@@ -1,0 +1,45 @@
+[package]
+name = "epub-reader-renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM-based EPUB renderer"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+epub-reader-core = { path = "../core" }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+
+[dependencies.web-sys]
+workspace = true
+features = [
+    "console",
+    "Blob",
+    "BlobPropertyBag",
+    "CssStyleDeclaration",
+    "Document",
+    "DomRect",
+    "DomTokenList",
+    "Element",
+    "HtmlCollection",
+    "HtmlDocument",
+    "HtmlElement",
+    "HtmlHeadElement",
+    "HtmlIFrameElement",
+    "Node",
+    "NodeList",
+    "Range",
+    "Selection",
+    "Url",
+    "Window",
+]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
