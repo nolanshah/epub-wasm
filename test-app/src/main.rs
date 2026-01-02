@@ -497,6 +497,10 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 h1, h2, h3, h4, h5, h6 {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin-top: 1.5em; }}
                 a {{ color: #0066cc; }}
                 .epub-section {{ scroll-margin-top: 20px; }}
+                /* Cover image styling */
+                svg {{ max-width: 100%; max-height: 90vh; height: auto; display: block; margin: 0 auto; }}
+                svg[viewBox] {{ width: auto !important; height: auto !important; }}
+                svg image {{ object-fit: contain; }}
             </style></head><body>${{bodyContent}}</body></html>`;
         }}
 
