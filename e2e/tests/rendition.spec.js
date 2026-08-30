@@ -47,6 +47,21 @@ test.describe('Rendition (rendition.html)', () => {
     await expect(page.locator('#status')).toContainText('section 3/3');
     await expect(frame(page).locator('h1')).toHaveText('Chapter 3');
   });
+
+  test('API errors are real exceptions, not silence', async ({ page }) => {
+    await page.goto(PAGE);
+    await expect(page.locator('#status')).toContainText('section 1/3');
+
+    const message = await page.evaluate(() => {
+      try {
+        window.rendition.display_section(99);
+        return 'no error';
+      } catch (e) {
+        return String(e.message || e);
+      }
+    });
+    expect(message).toContain('out of range');
+  });
 });
 
 test.describe('paginated flow', () => {

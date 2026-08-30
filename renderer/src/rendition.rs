@@ -46,10 +46,24 @@ struct Inner {
     /// last measured iframe size, to coalesce resize events
     last_size: (i32, i32),
     on_relocated: Option<js_sys::Function>,
+    on_error: Option<js_sys::Function>,
     onload: Option<Closure<dyn FnMut()>>,
     onclick: Option<Closure<dyn FnMut(Event)>>,
     onresize: Option<Closure<dyn FnMut()>>,
     onfonts: Option<Closure<dyn FnMut(JsValue)>>,
+}
+
+/// Report an error that happened inside an event closure, where there is no
+/// JS caller to return a Result to: the `on_error` callback if set, else
+/// `console.error`. Must be called with no active borrow of `rc`.
+fn report_error(rc: &Rc<RefCell<Inner>>, err: JsValue) {
+    let cb = rc.borrow().on_error.clone();
+    match cb {
+        Some(cb) => {
+            let _ = cb.call1(&JsValue::NULL, &err);
+        }
+        None => web_sys::console::error_2(&"epub-wasm Rendition:".into(), &err),
+    }
 }
 
 /// The main EPUB rendition controller
@@ -100,6 +114,7 @@ impl Rendition {
             stride: 0.0,
             last_size: (0, 0),
             on_relocated: None,
+            on_error: None,
             onload: None,
             onclick: None,
             onresize: None,
@@ -130,7 +145,9 @@ impl Rendition {
             let fragment = link
                 .get_attribute("data-epub-fragment")
                 .filter(|f| !f.is_empty());
-            let _ = display_at(&click_rc, index, fragment, PendingPage::First);
+            if let Err(e) = display_at(&click_rc, index, fragment, PendingPage::First) {
+                report_error(&click_rc, e);
+            }
         });
 
         // Fonts-ready handler: embedded fonts can finish loading after the
@@ -233,7 +250,9 @@ impl Rendition {
                 }
             };
             if let Some((index, page)) = redisplay {
-                let _ = display_at(&resize_rc, index, None, PendingPage::At(page));
+                if let Err(e) = display_at(&resize_rc, index, None, PendingPage::At(page)) {
+                    report_error(&resize_rc, e);
+                }
             }
         });
         if let Some(w) = web_sys::window() {
@@ -397,6 +416,13 @@ impl Rendition {
         self.inner.borrow_mut().on_relocated = callback;
     }
 
+    /// Callback for errors that occur inside event handlers (link clicks,
+    /// resizes), where there is no direct caller to receive them. Without a
+    /// callback such errors go to `console.error`.
+    pub fn on_error(&self, callback: Option<js_sys::Function>) {
+        self.inner.borrow_mut().on_error = callback;
+    }
+
     /// Remove the iframe, revoke blob URLs and release callbacks
     pub fn destroy(&self) {
         let mut inner = self.inner.borrow_mut();
@@ -410,6 +436,7 @@ impl Rendition {
         inner.onresize = None;
         inner.onfonts = None;
         inner.on_relocated = None;
+        inner.on_error = None;
         inner.book.revoke_resources();
     }
 }

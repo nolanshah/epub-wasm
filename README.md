@@ -118,7 +118,8 @@ flow, internal-link and TOC navigation. `new Rendition(bytes, containerElement)`
 (page-aware in paginated flow), `set_flow("paginated"|"scrolled")`, `flow`,
 `current_page()`, `page_count()`, `current_section_index()`, `metadata`, `toc`,
 `search()`, `set_styles(css)`, `on_relocated(cb)` (`{ index, href, page,
-page_count }`), `destroy()`. Pagination re-measures on window resize and when
+page_count }`), `on_error(cb)` (errors from event handlers; `console.error`
+otherwise), `destroy()`. Pagination re-measures on window resize and when
 embedded fonts finish loading.
 
 ### `JsCfi`

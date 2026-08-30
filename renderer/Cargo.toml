@@ -21,6 +21,7 @@ workspace = true
 features = [
     "Blob",
     "BlobPropertyBag",
+    "console",
     "CssStyleDeclaration",
     "Document",
     "DomRect",

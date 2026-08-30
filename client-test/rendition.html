@@ -41,6 +41,9 @@
             document.getElementById('status').textContent =
                 `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})${pages}`;
         });
+        r.on_error((e) => {
+            document.getElementById('status').textContent = 'Error: ' + e;
+        });
 
         const section = parseInt(params.get('section') ?? '', 10);
         if (!isNaN(section)) r.display_section(section); else r.display();
