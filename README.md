@@ -56,16 +56,15 @@ r.next(); r.prev(); r.display_href(r.toc[0].href);
 ```bash
 # Prerequisites: Rust + wasm-pack (cargo install wasm-pack)
 
-# Native library + test server
-cargo build --release
-
-# WASM package (required before either demo works — pkg/ is not checked in)
-wasm-pack build --release --target web renderer
-cp -r renderer/pkg client-test/pkg   # keep the SPA's copy in sync
-
-# Tests
-cargo test --workspace
+make          # = make wasm build test
+make wasm     # WASM package + sync client-test/pkg (required first; pkg/ is not checked in)
+make build    # native release build (test server)
+make test     # cargo test --workspace
+make e2e      # Playwright click-path tests (uses your installed Chrome)
 ```
+
+CI (GitHub Actions) runs the same targets plus the browser tests on every
+push and PR.
 
 ## Running the demos
 
