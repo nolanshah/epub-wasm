@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 
 use crate::cfi::Cfi;
+use crate::text_map::TextMap;
 
 /// Options for search
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,8 +38,10 @@ impl Default for SearchOptions {
 /// A search match result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMatch {
-    /// CFI pointing to the match location (spine-level only; see roadmap)
-    pub cfi: Cfi,
+    /// CFI string for the match. A range CFI targeting the matched text when
+    /// document structure was available (`Book::search`, `search_content`);
+    /// a spine-level point CFI otherwise.
+    pub cfi: String,
     /// Section index where match was found
     pub section_index: usize,
     /// The matched text (original casing)
@@ -50,36 +53,18 @@ pub struct SearchMatch {
     pub offset: usize,
 }
 
-/// Search for text in HTML content and return matches
-pub fn search_content(
-    content: &str,
-    query: &str,
-    section_index: usize,
-    options: &SearchOptions,
-) -> Vec<SearchMatch> {
-    let text = extract_text(content);
-    search_text(&text, query, section_index, options)
-}
-
-/// Search for `query` in already-extracted plain text.
+/// Find `query` in `text`, returning `(byte_offset, byte_len)` pairs.
 ///
-/// Safe for arbitrary Unicode: all slicing is done on char boundaries, and
-/// case-insensitive matching maps positions back to the original text even
-/// when lowercasing changes byte lengths.
-pub fn search_text(
-    text: &str,
-    query: &str,
-    section_index: usize,
-    options: &SearchOptions,
-) -> Vec<SearchMatch> {
-    let mut matches = Vec::new();
+/// Safe for arbitrary Unicode: all offsets are char boundaries in `text`,
+/// and case-insensitive matching maps positions back correctly even when
+/// lowercasing changes byte lengths.
+pub fn find_matches(text: &str, query: &str, options: &SearchOptions) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
 
     if query.is_empty() || text.is_empty() {
-        return matches;
+        return out;
     }
 
-    // Build the haystack we actually scan, plus a map from haystack byte
-    // offsets back to original byte offsets when lowercasing was applied.
     let (haystack, needle, map): (Cow<str>, String, Option<Vec<usize>>) =
         if options.case_insensitive {
             let (lower, map) = lowercase_with_map(text);
@@ -89,7 +74,7 @@ pub fn search_text(
         };
 
     if needle.is_empty() {
-        return matches;
+        return out;
     }
 
     let to_orig = |idx: usize| -> usize {
@@ -99,9 +84,7 @@ pub fn search_text(
         }
     };
 
-    let ctx = options.context_chars;
     let mut start = 0;
-
     while start < haystack.len() {
         let Some(pos) = haystack[start..].find(&needle) else {
             break;
@@ -110,35 +93,15 @@ pub fn search_text(
         let h_end = h_start + needle.len();
 
         // Map back to the original text. The match covers the original chars
-        // that produced haystack[h_start..h_end]; the last such char begins at
-        // to_orig(h_end - 1), so the match ends at the end of that char.
+        // that produced haystack[h_start..h_end]; the last such char begins
+        // at to_orig(h_end - 1), so the match ends at the end of that char.
         let o_start = floor_boundary(text, to_orig(h_start));
         let o_end = ceil_boundary(text, to_orig(h_end - 1) + 1);
 
-        let matched_text = &text[o_start..o_end];
-
-        let excerpt_start = floor_boundary(text, o_start.saturating_sub(ctx));
-        let excerpt_end = ceil_boundary(text, o_end.saturating_add(ctx).min(text.len()));
-
-        let mut excerpt = String::new();
-        if excerpt_start > 0 {
-            excerpt.push_str("...");
-        }
-        excerpt.push_str(&text[excerpt_start..excerpt_end]);
-        if excerpt_end < text.len() {
-            excerpt.push_str("...");
-        }
-
-        matches.push(SearchMatch {
-            cfi: Cfi::from_spine_index(section_index),
-            section_index,
-            matched_text: matched_text.to_string(),
-            excerpt,
-            offset: o_start,
-        });
+        out.push((o_start, o_end - o_start));
 
         if let Some(max) = options.max_results {
-            if matches.len() >= max {
+            if out.len() >= max {
                 break;
             }
         }
@@ -147,7 +110,88 @@ pub fn search_text(
         start = ceil_boundary(&haystack, h_start + 1);
     }
 
-    matches
+    out
+}
+
+fn build_match(
+    text: &str,
+    offset: usize,
+    len: usize,
+    cfi: String,
+    section_index: usize,
+    options: &SearchOptions,
+) -> SearchMatch {
+    let end = offset + len;
+    let ctx = options.context_chars;
+
+    let excerpt_start = floor_boundary(text, offset.saturating_sub(ctx));
+    let excerpt_end = ceil_boundary(text, end.saturating_add(ctx).min(text.len()));
+
+    let mut excerpt = String::new();
+    if excerpt_start > 0 {
+        excerpt.push_str("...");
+    }
+    excerpt.push_str(&text[excerpt_start..excerpt_end]);
+    if excerpt_end < text.len() {
+        excerpt.push_str("...");
+    }
+
+    SearchMatch {
+        cfi,
+        section_index,
+        matched_text: text[offset..end].to_string(),
+        excerpt,
+        offset,
+    }
+}
+
+/// Search plain text. Matches carry spine-level point CFIs (no document
+/// structure is available here); use `search_content` or `Book::search` for
+/// precise range CFIs.
+pub fn search_text(
+    text: &str,
+    query: &str,
+    section_index: usize,
+    options: &SearchOptions,
+) -> Vec<SearchMatch> {
+    let point = Cfi::from_spine_index(section_index).to_string();
+    find_matches(text, query, options)
+        .into_iter()
+        .map(|(o, l)| build_match(text, o, l, point.clone(), section_index, options))
+        .collect()
+}
+
+/// Search HTML content. Matches carry range CFIs targeting the matched text.
+pub fn search_content(
+    content: &str,
+    query: &str,
+    section_index: usize,
+    options: &SearchOptions,
+) -> Vec<SearchMatch> {
+    let map = TextMap::parse(content);
+    matches_in_map(&map, query, section_index, options)
+}
+
+/// Search an already-scanned document.
+pub fn matches_in_map(
+    map: &TextMap,
+    query: &str,
+    section_index: usize,
+    options: &SearchOptions,
+) -> Vec<SearchMatch> {
+    let text = map.text();
+    let fallback = Cfi::from_spine_index(section_index).to_string();
+
+    find_matches(text, query, options)
+        .into_iter()
+        .map(|(o, l)| {
+            let cfi = map
+                .cfi_range(section_index, o, o + l)
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| fallback.clone());
+            build_match(text, o, l, cfi, section_index, options)
+        })
+        .collect()
 }
 
 /// Lowercase `text`, returning the lowercased string and a map from each byte
@@ -186,37 +230,10 @@ fn ceil_boundary(s: &str, i: usize) -> usize {
     i
 }
 
-/// Extract plain text from HTML content, collapsing runs of whitespace to a
-/// single space.
+/// Extract normalized plain text from HTML content: entities decoded,
+/// whitespace collapsed, block boundaries becoming single spaces.
 pub(crate) fn extract_text(html: &str) -> String {
-    let document = scraper::Html::parse_document(html);
-    let body_selector = scraper::Selector::parse("body").unwrap();
-
-    let pieces: Vec<&str> = match document.select(&body_selector).next() {
-        Some(body) => body.text().collect(),
-        None => document.root_element().text().collect(),
-    };
-
-    collapse_whitespace(&pieces.join(" "))
-}
-
-fn collapse_whitespace(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut pending_space = false;
-
-    for ch in s.chars() {
-        if ch.is_whitespace() {
-            pending_space = !out.is_empty();
-        } else {
-            if pending_space {
-                out.push(' ');
-                pending_space = false;
-            }
-            out.push(ch);
-        }
-    }
-
-    out
+    TextMap::parse(html).into_text()
 }
 
 #[cfg(test)]
@@ -232,6 +249,9 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matched_text, "world");
         assert_eq!(matches[0].offset, 6);
+        // Precise range CFI into the paragraph's first text chunk
+        // (no <head> in this doc, so body is element child 1 → step 2)
+        assert_eq!(matches[0].cfi, "epubcfi(/6/2!/2/2,/1:6,/1:11)");
     }
 
     #[test]
@@ -283,6 +303,18 @@ mod tests {
     }
 
     #[test]
+    fn matches_across_inline_elements_are_found() {
+        // The old scraper-based extraction inserted a space at EVERY tag
+        // boundary, making words split by inline markup unsearchable.
+        let content = "<p>He<b>ll</b>o world</p>";
+        let matches = search_content(content, "hello", 0, &SearchOptions::new());
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].matched_text, "Hello");
+        // Range CFI spans from the p's first chunk into the b's text
+        assert!(matches[0].cfi.contains(','));
+    }
+
+    #[test]
     fn default_options_match_new() {
         let d = SearchOptions::default();
         assert!(d.case_insensitive);
@@ -322,8 +354,6 @@ mod tests {
 
     #[test]
     fn match_starting_with_multibyte_char() {
-        // The old code advanced `start` by one byte after a match, which is
-        // not a char boundary when the match begins with a multibyte char.
         let text = "é and é and é";
         let matches = search_text(text, "é", 0, &SearchOptions::new());
         assert_eq!(matches.len(), 3);

@@ -11,15 +11,17 @@ mod navigation;
 mod package;
 mod search;
 mod section;
+mod text_map;
 
 pub mod book;
 pub mod path;
 
 pub use archive::Archive;
 pub use book::Book;
-pub use cfi::{Cfi, CfiStep};
+pub use cfi::{Cfi, CfiRange, CfiStep};
 pub use error::{EpubError, Result};
 pub use navigation::NavItem;
 pub use package::{ManifestItem, Metadata, SpineItem};
 pub use search::{search_content, search_text, SearchMatch, SearchOptions};
 pub use section::Section;
+pub use text_map::TextMap;

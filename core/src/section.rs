@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::package::SpineItem;
 use crate::path;
+use crate::text_map::TextMap;
 
 /// A section of the book (corresponds to a spine item)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,9 +25,9 @@ pub struct Section {
     /// Raw content (loaded on demand)
     #[serde(skip)]
     content: Option<String>,
-    /// Plain text extracted from the content (computed on demand)
+    /// Text/position map computed from the content (on demand)
     #[serde(skip)]
-    text: Option<String>,
+    map: Option<TextMap>,
 }
 
 impl Section {
@@ -45,7 +46,7 @@ impl Section {
             linear: spine_item.linear,
             properties: spine_item.properties.clone(),
             content: None,
-            text: None,
+            map: None,
         }
     }
 
@@ -57,7 +58,7 @@ impl Section {
     /// Set the content
     pub fn set_content(&mut self, content: String) {
         self.content = Some(content);
-        self.text = None;
+        self.map = None;
     }
 
     /// Get the content if loaded
@@ -67,7 +68,7 @@ impl Section {
 
     /// Take ownership of the content
     pub fn take_content(&mut self) -> Option<String> {
-        self.text = None;
+        self.map = None;
         self.content.take()
     }
 
@@ -91,14 +92,21 @@ impl Section {
         self.resolve_href(relative).0
     }
 
-    /// Plain text of the section, with whitespace collapsed. Cached after the
-    /// first call. Returns `None` if content has not been loaded.
-    pub fn text(&mut self) -> Option<&str> {
-        if self.text.is_none() {
+    /// Text/position map of the section (normalized text plus offset↔CFI
+    /// mappings). Cached after the first call. Returns `None` if content has
+    /// not been loaded.
+    pub fn map(&mut self) -> Option<&TextMap> {
+        if self.map.is_none() {
             let content = self.content.as_deref()?;
-            self.text = Some(crate::search::extract_text(content));
+            self.map = Some(TextMap::parse(content));
         }
-        self.text.as_deref()
+        self.map.as_ref()
+    }
+
+    /// Plain text of the section, normalized. Cached after the first call.
+    /// Returns `None` if content has not been loaded.
+    pub fn text(&mut self) -> Option<&str> {
+        self.map().map(|m| m.text())
     }
 
     /// Extract plain text from the XHTML content (uncached).

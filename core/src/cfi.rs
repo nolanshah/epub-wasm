@@ -174,6 +174,88 @@ impl PartialOrd for Cfi {
     }
 }
 
+/// A CFI range: `epubcfi(parent,start,end)`, where the full start point is
+/// `parent + start` and the full end point is `parent + end`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfiRange {
+    pub start: Cfi,
+    pub end: Cfi,
+}
+
+impl CfiRange {
+    /// Parse a range CFI string.
+    pub fn parse(s: &str) -> Result<Self> {
+        let inner = s
+            .strip_prefix("epubcfi(")
+            .and_then(|x| x.strip_suffix(')'))
+            .unwrap_or(s);
+
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() != 3 {
+            return Err(EpubError::InvalidCfi(format!(
+                "Not a range CFI (expected 2 commas): {}",
+                s
+            )));
+        }
+
+        let start = Cfi::parse(&format!("{}{}", parts[0], parts[1]))?;
+        let end = Cfi::parse(&format!("{}{}", parts[0], parts[2]))?;
+        Ok(CfiRange { start, end })
+    }
+
+    /// Order by start point, then end point.
+    pub fn compare(&self, other: &CfiRange) -> Ordering {
+        match self.start.compare(&other.start) {
+            Ordering::Equal => self.end.compare(&other.end),
+            ord => ord,
+        }
+    }
+}
+
+impl fmt::Display for CfiRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "epubcfi(/6/{}!", (self.start.spine_index + 1) * 2)?;
+
+        // Longest common step prefix, keeping at least one step (or the
+        // offset) in each local part.
+        let s = &self.start.path;
+        let e = &self.end.path;
+        let mut lcp = 0;
+        while lcp < s.len() && lcp < e.len() && s[lcp] == e[lcp] {
+            lcp += 1;
+        }
+        if lcp == s.len() && lcp == e.len() {
+            lcp = lcp.saturating_sub(1);
+        }
+
+        let write_steps = |f: &mut fmt::Formatter<'_>, steps: &[CfiStep]| -> fmt::Result {
+            for step in steps {
+                write!(f, "/{}", step.index)?;
+                if let Some(ref id) = step.id {
+                    write!(f, "[{}]", id)?;
+                }
+            }
+            Ok(())
+        };
+
+        write_steps(f, &s[..lcp])?;
+
+        write!(f, ",")?;
+        write_steps(f, &s[lcp..])?;
+        if let Some(o) = self.start.character_offset {
+            write!(f, ":{}", o)?;
+        }
+
+        write!(f, ",")?;
+        write_steps(f, &e[lcp..])?;
+        if let Some(o) = self.end.character_offset {
+            write!(f, ":{}", o)?;
+        }
+
+        write!(f, ")")
+    }
+}
+
 fn parse_spine_index(path: &str) -> Result<usize> {
     // Spine path format: /6/N where N is (spine_index + 1) * 2
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -392,5 +474,41 @@ mod tests {
     fn test_from_spine_index() {
         let cfi = Cfi::from_spine_index(5);
         assert_eq!(cfi.to_string(), "epubcfi(/6/12)");
+    }
+
+    #[test]
+    fn range_parse_and_display_round_trip() {
+        let s = "epubcfi(/6/4!/4/2,/1:5,/2/1:3)";
+        let r = CfiRange::parse(s).unwrap();
+        assert_eq!(r.start.spine_index, 1);
+        assert_eq!(r.start.path.iter().map(|p| p.index).collect::<Vec<_>>(), vec![4, 2, 1]);
+        assert_eq!(r.start.character_offset, Some(5));
+        assert_eq!(r.end.path.iter().map(|p| p.index).collect::<Vec<_>>(), vec![4, 2, 2, 1]);
+        assert_eq!(r.end.character_offset, Some(3));
+        assert_eq!(r.to_string(), s);
+    }
+
+    #[test]
+    fn range_within_one_chunk() {
+        let s = "epubcfi(/6/2!/4/2,/1:6,/1:11)";
+        let r = CfiRange::parse(s).unwrap();
+        assert_eq!(r.start.character_offset, Some(6));
+        assert_eq!(r.end.character_offset, Some(11));
+        assert_eq!(
+            r.start.path.iter().map(|p| p.index).collect::<Vec<_>>(),
+            vec![4, 2, 1]
+        );
+        assert_eq!(r.to_string(), s);
+    }
+
+    #[test]
+    fn range_ordering_and_errors() {
+        let a = CfiRange::parse("epubcfi(/6/2!/4/2/1,:0,:5)").unwrap();
+        let b = CfiRange::parse("epubcfi(/6/2!/4/2/1,:3,:8)").unwrap();
+        assert_eq!(a.compare(&b), std::cmp::Ordering::Less);
+
+        assert!(CfiRange::parse("epubcfi(/6/2!/4/2/1:3)").is_err());
+        // Point CFIs still reject range syntax
+        assert!(Cfi::parse("epubcfi(/6/4!/4/2,/1:5,/2/1:3)").is_err());
     }
 }

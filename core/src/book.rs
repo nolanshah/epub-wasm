@@ -10,8 +10,9 @@ use crate::error::{EpubError, Result};
 use crate::navigation::{parse_nav, parse_ncx, resolve_hrefs, NavItem};
 use crate::package::{ManifestItem, Metadata, Package, SpineItem};
 use crate::path;
-use crate::search::{search_text, SearchMatch, SearchOptions};
+use crate::search::{matches_in_map, SearchMatch, SearchOptions};
 use crate::section::Section;
+use crate::text_map::TextMap;
 
 /// Main EPUB book structure
 pub struct Book {
@@ -174,6 +175,12 @@ impl Book {
         Ok(self.sections[index].text().unwrap())
     }
 
+    /// Get the text/position map of a section (loading if necessary)
+    pub fn section_map(&mut self, index: usize) -> Result<&TextMap> {
+        self.load_section(index)?;
+        Ok(self.sections[index].map().unwrap())
+    }
+
     /// Resolve an href to an archive path. Tries it as archive-absolute first,
     /// then relative to the OPF directory. Percent-encoding and `../` are handled.
     fn resource_path(&self, href: &str) -> Option<String> {
@@ -291,12 +298,6 @@ impl Book {
         }
 
         for i in 0..self.sections.len() {
-            let text = match self.section_text(i) {
-                Ok(t) => t,
-                // A single unreadable section shouldn't abort the whole search
-                Err(_) => continue,
-            };
-
             let remaining = options
                 .max_results
                 .map(|max| max.saturating_sub(all_matches.len()));
@@ -304,12 +305,18 @@ impl Book {
                 break;
             }
 
+            let map = match self.section_map(i) {
+                Ok(m) => m,
+                // A single unreadable section shouldn't abort the whole search
+                Err(_) => continue,
+            };
+
             let section_opts = SearchOptions {
                 max_results: remaining,
                 ..options.clone()
             };
 
-            all_matches.extend(search_text(text, query, i, &section_opts));
+            all_matches.extend(matches_in_map(map, query, i, &section_opts));
         }
 
         Ok(all_matches)

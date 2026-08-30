@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 
-use epub_reader_core::{Book, SearchOptions};
+use epub_reader_core::{Book, CfiRange, SearchOptions};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -181,6 +181,15 @@ fn search_across_sections_with_unicode_text() {
     assert!(matches[0].excerpt.contains("Alice’s"));
     assert_eq!(matches[1].section_index, 1);
     assert_eq!(matches[1].matched_text, "Rabbit");
+
+    // Matches carry parseable range CFIs targeting the matched text
+    for m in &matches {
+        let range = CfiRange::parse(&m.cfi).unwrap();
+        assert_eq!(range.start.spine_index, m.section_index);
+        assert!(range.start.character_offset.is_some());
+        assert_eq!(range.to_string(), m.cfi);
+    }
+    assert!(matches[0].cfi.starts_with("epubcfi(/6/2!"));
 
     let limited = book
         .search(

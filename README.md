@@ -107,7 +107,7 @@ fully static — host it anywhere.
 | `get_resource(href)` / `get_resource_url(href)` | Resource bytes / cached blob URL |
 | `media_type(href)` | MIME type (manifest first, extension fallback) |
 | `get_cover()` / `get_cover_url()` | Cover image bytes / blob URL |
-| `search(query, opts?)` | `[{ section_index, matched_text, excerpt, offset, cfi }]`. `opts`: `{ caseInsensitive?, maxResults?, contextChars? }` (plain object, reusable) |
+| `search(query, opts?)` | `[{ section_index, matched_text, excerpt, offset, cfi }]` — `cfi` is a **range CFI string** (e.g. `epubcfi(/6/4!/4/2,/1:5,/1:11)`) targeting the matched text in the raw document. `opts`: `{ caseInsensitive?, maxResults?, contextChars? }` (plain object, reusable) |
 | `revoke_resources()` | Release all blob URLs |
 
 ### `Rendition`
@@ -144,12 +144,17 @@ namespace-prefixed OPF elements, non-self-closing tags, `<span>` TOC headings,
 NAV→NCX fallback, `<spine toc=…>`, EPUB2 `<meta name="cover">` and EPUB3
 `cover-image`, Unicode-safe search (no panics on multibyte text).
 
+CFI support (`Cfi`, `CfiRange`, `TextMap`): search matches carry range CFIs
+with element paths and character offsets (code points, per spec), generated
+by a single scan that also maps text offsets back to source byte spans.
+CFIs address the **raw stored document** — the rendered DOM may differ once
+scripts are stripped or highlights injected, so persistent references target
+the file, not the live view.
+
 ## Roadmap
 
 Not implemented yet, in rough priority order:
 
-- **CFI text targeting** — search results and locations carry spine-level CFIs
-  only; DOM-path + character-offset generation would enable precise jumps
 - **Locations / progress %** — stable position index across the book
 - **Highlights & annotations** — ranges + overlay rendering
 - **RTL & fixed-layout** — `direction` is exposed but not acted on;
