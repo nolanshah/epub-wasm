@@ -111,12 +111,16 @@ fn main() {
         .as_bytes(),
     );
 
+    // Chapter 2 is long so that paginated flow has multiple pages and the
+    // "#end" fragment lands on a late page. The link/search lines stay early.
     add(
         "OEBPS/Text/ch 2.xhtml",
         chapter(
             2,
-            r#"<p>Some searchable words: xylophone quartz xylophone.</p>
-<p>Back to <a href="ch1.xhtml" id="link-to-ch1">chapter one</a>.</p>"#,
+            &(r#"<p>Some searchable words: xylophone quartz xylophone.</p>
+<p>Back to <a href="ch1.xhtml" id="link-to-ch1">chapter one</a>.</p>"#
+                .to_string()
+                + &r#"<p>Chapter two filler. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>"#.repeat(60)),
         )
         .as_bytes(),
     );

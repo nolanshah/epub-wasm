@@ -110,11 +110,14 @@ fully static — host it anywhere.
 
 ### `Rendition`
 
-Minimal reader controller: one iframe, scrolled flow, internal-link and TOC
-navigation. `new Rendition(bytes, containerElement)`, `display()`,
-`display_section(i)`, `display_href(href)`, `next()`, `prev()`, `current_section_index()`,
-`metadata`, `toc`, `search()`, `set_styles(css)`, `on_relocated(cb)`,
-`destroy()`.
+Reader controller: one iframe, scrolled **or paginated** (CSS multi-column)
+flow, internal-link and TOC navigation. `new Rendition(bytes, containerElement)`,
+`display()`, `display_section(i)`, `display_href(href)`, `next()`, `prev()`
+(page-aware in paginated flow), `set_flow("paginated"|"scrolled")`, `flow`,
+`current_page()`, `page_count()`, `current_section_index()`, `metadata`, `toc`,
+`search()`, `set_styles(css)`, `on_relocated(cb)` (`{ index, href, page,
+page_count }`), `destroy()`. Pagination re-measures on window resize and when
+embedded fonts finish loading.
 
 ### `JsCfi`
 
@@ -142,9 +145,6 @@ NAV→NCX fallback, `<spine toc=…>`, EPUB2 `<meta name="cover">` and EPUB3
 
 Not implemented yet, in rough priority order:
 
-- **Column pagination** — `Rendition` currently renders scrolled flow only;
-  paged flow (CSS columns + measured page counts) is the main missing epub.js
-  feature
 - **CFI text targeting** — search results and locations carry spine-level CFIs
   only; DOM-path + character-offset generation would enable precise jumps
 - **Locations / progress %** — stable position index across the book

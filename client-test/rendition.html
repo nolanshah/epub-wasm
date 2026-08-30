@@ -18,6 +18,7 @@
     <header>
         <button id="prev">← Prev</button>
         <button id="next">Next →</button>
+        <button id="flow">scrolled</button>
         <span id="status">loading…</span>
     </header>
     <div id="viewer"></div>
@@ -33,10 +34,12 @@
         const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
 
         const r = new Rendition(bytes, document.getElementById('viewer'));
+        window.rendition = r; // handy for the console and the e2e tests
         r.set_styles('body { max-width: 40em; margin: auto; padding: 2rem; font-family: Georgia, serif; line-height: 1.6 }');
-        r.on_relocated(({ index, href }) => {
+        r.on_relocated(({ index, href, page, page_count }) => {
+            const pages = page_count > 1 ? ` · page ${page + 1}/${page_count}` : '';
             document.getElementById('status').textContent =
-                `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})`;
+                `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})${pages}`;
         });
 
         const section = parseInt(params.get('section') ?? '', 10);
@@ -44,6 +47,11 @@
 
         document.getElementById('prev').onclick = () => r.prev();
         document.getElementById('next').onclick = () => r.next();
+        document.getElementById('flow').onclick = () => {
+            const next = r.flow === 'paginated' ? 'scrolled' : 'paginated';
+            r.set_flow(next);
+            document.getElementById('flow').textContent = next;
+        };
         document.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowLeft') r.prev();
             if (e.key === 'ArrowRight') r.next();
