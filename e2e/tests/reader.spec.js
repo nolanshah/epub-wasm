@@ -148,6 +148,19 @@ test.describe('client reader (index.html)', () => {
     await expect(page.locator('.result-item')).toHaveCount(0);
   });
 
+  test('progress indicator appears and grows through the book', async ({ page }) => {
+    await page.goto(READER);
+    await expect(page.locator('#progress')).toHaveText(/^\d+%$/);
+    await expect(page.locator('#progress')).toHaveText('0%');
+
+    await page.locator('#next-btn').click();
+    await page.locator('#next-btn').click();
+    await expect(page.locator('#section-num')).toHaveText('3');
+
+    const text = await page.locator('#progress').textContent();
+    expect(parseInt(text, 10)).toBeGreaterThan(0);
+  });
+
   test('open-another-book returns to the upload screen', async ({ page }) => {
     await page.goto(READER);
     await expect(page.locator('#reader-screen')).toBeVisible();

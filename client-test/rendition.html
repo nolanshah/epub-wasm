@@ -36,11 +36,13 @@
         const r = new Rendition(bytes, document.getElementById('viewer'));
         window.rendition = r; // handy for the console and the e2e tests
         r.set_styles('body { max-width: 40em; margin: auto; padding: 2rem; font-family: Georgia, serif; line-height: 1.6 }');
-        r.on_relocated(({ index, href, page, page_count }) => {
+        r.on_relocated(({ index, href, page, page_count, percentage }) => {
             const pages = page_count > 1 ? ` · page ${page + 1}/${page_count}` : '';
+            const pct = percentage == null ? '' : ` · ${Math.round(percentage)}%`;
             document.getElementById('status').textContent =
-                `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})${pages}`;
+                `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})${pages}${pct}`;
         });
+        r.generate_locations(600);
         r.on_error((e) => {
             document.getElementById('status').textContent = 'Error: ' + e;
         });

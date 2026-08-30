@@ -399,6 +399,12 @@ impl Rendition {
         self.inner.borrow_mut().book.search(query, options)
     }
 
+    /// Build the locations index (see `JsBook.generate_locations`); after
+    /// this, `relocated` events carry a `percentage`.
+    pub fn generate_locations(&self, chars_per: usize) -> Result<usize, JsValue> {
+        self.inner.borrow_mut().book.generate_locations(chars_per)
+    }
+
     /// CSS injected into every section (fonts, colors, themes). Re-renders
     /// the current section.
     pub fn set_styles(&self, css: Option<String>) -> Result<(), JsValue> {
@@ -463,7 +469,15 @@ impl Rendition {
     }
 }
 
-type Relocation = (Option<js_sys::Function>, usize, String, usize, usize);
+struct Relocation {
+    callback: Option<js_sys::Function>,
+    index: usize,
+    href: String,
+    page: usize,
+    page_count: usize,
+    /// Progress percentage; None until locations have been generated
+    percentage: Option<f64>,
+}
 
 fn collect_relocation(inner: &Inner) -> Relocation {
     let href = inner
@@ -472,25 +486,41 @@ fn collect_relocation(inner: &Inner) -> Relocation {
         .section(inner.current)
         .map(|s| s.href.clone())
         .unwrap_or_default();
-    (
-        inner.on_relocated.clone(),
-        inner.current,
+    // How far through the section: end of the current page in paginated
+    // flow, start of the section otherwise.
+    let fraction = if inner.page_count > 1 {
+        (inner.current_page as f64 + 1.0) / inner.page_count as f64
+    } else {
+        0.0
+    };
+    Relocation {
+        callback: inner.on_relocated.clone(),
+        index: inner.current,
         href,
-        inner.current_page,
-        inner.page_count,
-    )
+        page: inner.current_page,
+        page_count: inner.page_count,
+        percentage: inner.book.percentage_at(inner.current, fraction),
+    }
 }
 
 /// Call the relocated callback (outside any RefCell borrow).
 fn fire_relocated(relocation: Option<Relocation>) {
-    let Some((Some(cb), index, href, page, page_count)) = relocation else {
+    let Some(r) = relocation else {
+        return;
+    };
+    let Some(cb) = r.callback else {
         return;
     };
     let obj = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&obj, &"index".into(), &(index as u32).into());
-    let _ = js_sys::Reflect::set(&obj, &"href".into(), &href.into());
-    let _ = js_sys::Reflect::set(&obj, &"page".into(), &(page as u32).into());
-    let _ = js_sys::Reflect::set(&obj, &"page_count".into(), &(page_count as u32).into());
+    let _ = js_sys::Reflect::set(&obj, &"index".into(), &(r.index as u32).into());
+    let _ = js_sys::Reflect::set(&obj, &"href".into(), &r.href.into());
+    let _ = js_sys::Reflect::set(&obj, &"page".into(), &(r.page as u32).into());
+    let _ = js_sys::Reflect::set(&obj, &"page_count".into(), &(r.page_count as u32).into());
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &"percentage".into(),
+        &r.percentage.map(JsValue::from).unwrap_or(JsValue::NULL),
+    );
     let _ = cb.call1(&JsValue::NULL, &obj);
 }
 

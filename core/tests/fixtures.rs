@@ -208,6 +208,35 @@ fn search_across_sections_with_unicode_text() {
     );
 }
 
+#[test]
+fn locations_index_is_monotonic_with_valid_cfis() {
+    use epub_reader_core::Cfi;
+
+    let mut book = Book::from_bytes(tricky_epub3()).unwrap();
+    let locations = book.generate_locations(20).unwrap();
+
+    assert!(locations.total() >= 3, "expected several positions");
+
+    let mut last_pct = -1.0;
+    let mut last_section = 0;
+    for l in &locations.locations {
+        assert!(l.percentage >= last_pct, "percentages must be monotonic");
+        assert!(l.section_index >= last_section);
+        last_pct = l.percentage;
+        last_section = l.section_index;
+
+        let cfi = Cfi::parse(&l.cfi).unwrap();
+        assert_eq!(cfi.spine_index, l.section_index);
+    }
+    assert!(last_pct < 100.0);
+
+    // Interpolation: start of book = 0, end of last section = 100
+    assert_eq!(locations.percentage_at(0, 0.0), 0.0);
+    assert_eq!(locations.percentage_at(1, 1.0), 100.0);
+    let mid = locations.percentage_at(1, 0.0);
+    assert!(mid > 0.0 && mid < 100.0);
+}
+
 fn epub2_ncx_only(nav_href: Option<&str>) -> Vec<u8> {
     let nav_item = nav_href
         .map(|h| format!(r#"<item id="nav" href="{}" media-type="application/xhtml+xml" properties="nav"/>"#, h))

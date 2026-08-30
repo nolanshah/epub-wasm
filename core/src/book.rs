@@ -7,6 +7,7 @@ use crate::archive::Archive;
 use crate::cfi::Cfi;
 use crate::container;
 use crate::error::{EpubError, Result};
+use crate::locations::{Location, Locations};
 use crate::navigation::{parse_nav, parse_ncx, resolve_hrefs, NavItem};
 use crate::package::{ManifestItem, Metadata, Package, SpineItem};
 use crate::path;
@@ -325,6 +326,59 @@ impl Book {
     /// Navigate to a CFI
     pub fn go_to_cfi(&mut self, cfi: &Cfi) -> Result<&Section> {
         self.load_section(cfi.spine_index)
+    }
+
+    /// Build a stable position index: one location every `chars_per`
+    /// characters of plain text, each with a point CFI and a percentage.
+    /// Loads (and scans) every section.
+    pub fn generate_locations(&mut self, chars_per: usize) -> Result<Locations> {
+        let chars_per = chars_per.max(1);
+        let mut locations = Vec::new();
+        let mut section_chars = Vec::with_capacity(self.sections.len());
+
+        // First pass: char counts (also warms the maps)
+        for i in 0..self.sections.len() {
+            let chars = match self.section_map(i) {
+                Ok(m) => m.text().chars().count(),
+                Err(_) => 0,
+            };
+            section_chars.push(chars);
+        }
+        let total_chars: usize = section_chars.iter().sum();
+        if total_chars == 0 {
+            return Ok(Locations::new(locations, section_chars));
+        }
+
+        let mut chars_before = 0usize;
+        for i in 0..self.sections.len() {
+            if section_chars[i] == 0 {
+                continue;
+            }
+            let map = match self.section_map(i) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            let mut count = 0usize;
+            for (byte_offset, _) in map.text().char_indices() {
+                if count % chars_per == 0 {
+                    let cfi = map
+                        .cfi_point(i, byte_offset)
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| Cfi::from_spine_index(i).to_string());
+                    locations.push(Location {
+                        cfi,
+                        section_index: i,
+                        offset: byte_offset,
+                        percentage: (chars_before + count) as f64 / total_chars as f64 * 100.0,
+                    });
+                }
+                count += 1;
+            }
+            chars_before += section_chars[i];
+        }
+
+        Ok(Locations::new(locations, section_chars))
     }
 
     /// Get the next section

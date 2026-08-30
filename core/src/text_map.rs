@@ -149,6 +149,18 @@ impl TextMap {
         Some((&chunk.path, char_offset))
     }
 
+    /// Point CFI for a normalized byte offset within spine item `spine_index`.
+    pub fn cfi_point(&self, spine_index: usize, offset: usize) -> Option<Cfi> {
+        let (path, char_offset) = self.point(offset, Side::Start)?;
+        Some(Cfi {
+            spine_index,
+            path: path.iter().map(|&i| CfiStep { index: i, id: None }).collect(),
+            character_offset: Some(char_offset),
+            temporal_offset: None,
+            spatial_offset: None,
+        })
+    }
+
     /// Range CFI for a normalized byte range within spine item `spine_index`.
     pub fn cfi_range(&self, spine_index: usize, start: usize, end: usize) -> Option<CfiRange> {
         if start >= end || end > self.text.len() {

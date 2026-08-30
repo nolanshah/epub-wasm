@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use epub_reader_core::{path, Book, Cfi, SearchOptions, TextMap};
+use epub_reader_core::{path, Book, Cfi, Location, Locations, SearchOptions, TextMap};
 
 use crate::resources::Resources;
 use crate::rewrite::{inject_into_head, rewrite_css, rewrite_html, RefKind, Reference, Replacement};
@@ -129,6 +129,7 @@ const BASE_STYLES: &str = "img, svg, video { max-width: 100%; height: auto; }";
 pub struct JsBook {
     inner: Book,
     resources: Resources,
+    locations: Option<Locations>,
 }
 
 #[wasm_bindgen]
@@ -140,6 +141,7 @@ impl JsBook {
         Ok(JsBook {
             inner: book,
             resources: Resources::new(),
+            locations: None,
         })
     }
 
@@ -244,7 +246,7 @@ impl JsBook {
 
     /// Blob URL for a resource (cached; revoke with `revoke_resources`)
     pub fn get_resource_url(&mut self, href: &str) -> Result<Option<String>, JsValue> {
-        let Self { inner, resources } = self;
+        let Self { inner, resources, .. } = self;
         blob_url_for(inner, resources, "", href, 0)
     }
 
@@ -264,7 +266,7 @@ impl JsBook {
         let Some(p) = self.inner.cover_path() else {
             return Ok(None);
         };
-        let Self { inner, resources } = self;
+        let Self { inner, resources, .. } = self;
         blob_url_for(inner, resources, "", &p, 0)
     }
 
@@ -274,6 +276,35 @@ impl JsBook {
         let opts: SearchOptions = from_js(options)?;
         let matches = self.inner.search(query, &opts).map_err(js_err)?;
         to_js(&matches)
+    }
+
+    /// Build a stable position index: one location every `chars_per`
+    /// characters of plain text (a common value is 1024). Loads and scans
+    /// every section; returns the number of positions. Enables
+    /// `percentage_at` and the `locations` getter.
+    pub fn generate_locations(&mut self, chars_per: usize) -> Result<usize, JsValue> {
+        let locations = self.inner.generate_locations(chars_per).map_err(js_err)?;
+        let total = locations.total();
+        self.locations = Some(locations);
+        Ok(total)
+    }
+
+    /// The generated positions: `[{ cfi, section_index, offset, percentage }]`
+    /// (empty until `generate_locations` is called)
+    #[wasm_bindgen(getter)]
+    pub fn locations(&self) -> Result<JsValue, JsValue> {
+        match &self.locations {
+            Some(l) => to_js(&l.locations),
+            None => to_js(&Vec::<Location>::new()),
+        }
+    }
+
+    /// Progress through the book (0–100) at `fraction` (0.0–1.0) of the way
+    /// through a section. `undefined` until `generate_locations` is called.
+    pub fn percentage_at(&self, section_index: usize, fraction: f64) -> Option<f64> {
+        self.locations
+            .as_ref()
+            .map(|l| l.percentage_at(section_index, fraction))
     }
 
     /// Revoke every blob URL this book created. Call when discarding the book.
@@ -297,7 +328,7 @@ impl JsBook {
             content = inject_marks(&content, map, &opts.highlights);
         }
 
-        let Self { inner, resources } = self;
+        let Self { inner, resources, .. } = self;
         let mut first_err: Option<JsValue> = None;
 
         let html = rewrite_html(&content, opts.strip_scripts, |r: Reference<'_>| {

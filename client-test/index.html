@@ -267,6 +267,7 @@
                     <svg class="icon"><use href="#icon-left"/></svg>
                 </button>
                 <span class="section-info"><span id="section-num">0</span> / <span id="section-total">0</span></span>
+                <span class="section-info" id="progress"></span>
                 <button class="btn" id="next-btn" disabled>
                     <svg class="icon"><use href="#icon-right"/></svg>
                 </button>
@@ -335,6 +336,14 @@
             loadSection(0);
             $('prev-btn').disabled = false;
             $('next-btn').disabled = false;
+
+            // Build the progress index once the first section is up
+            setTimeout(() => {
+                try {
+                    book?.generate_locations(1024);
+                    updateStatus();
+                } catch (e) { /* progress stays hidden */ }
+            }, 50);
         }
 
         async function handleFile(file) {
@@ -477,6 +486,8 @@
         function updateStatus() {
             $('section-num').textContent = currentSection + 1;
             $('section-total').textContent = sectionCount;
+            const pct = book?.percentage_at(currentSection, 0);
+            $('progress').textContent = pct === undefined ? '' : `${Math.round(pct)}%`;
         }
 
         function highlightTocItem(href) {
@@ -516,6 +527,7 @@
             $('reader-screen').classList.remove('active');
             $('upload-screen').classList.remove('hidden');
             $('epub-container').innerHTML = '';
+            $('progress').textContent = '';
             $('mode-chapter').classList.add('active');
             $('mode-single').classList.remove('active');
         }

@@ -107,6 +107,8 @@ fully static — host it anywhere.
 | `get_resource(href)` / `get_resource_url(href)` | Resource bytes / cached blob URL |
 | `media_type(href)` | MIME type (manifest first, extension fallback) |
 | `get_cover()` / `get_cover_url()` | Cover image bytes / blob URL |
+| `generate_locations(n)` | Build a stable position index (one location per `n` chars of text); returns the count. Enables `locations` and `percentage_at` |
+| `locations` / `percentage_at(i, fraction)` | The index as `[{ cfi, section_index, offset, percentage }]` / progress (0–100) at a fraction through section `i` |
 | `search(query, opts?)` | `[{ section_index, matched_text, excerpt, offset, len, cfi }]` — `cfi` is a **range CFI string** (e.g. `epubcfi(/6/4!/4/2,/1:5,/1:11)`) targeting the matched text in the raw document; `{start: offset, end: offset + len}` feeds straight into `render_section` highlights. `opts`: `{ caseInsensitive?, maxResults?, contextChars? }` (plain object, reusable) |
 | `revoke_resources()` | Release all blob URLs |
 
@@ -117,10 +119,11 @@ flow, internal-link and TOC navigation. `new Rendition(bytes, containerElement)`
 `display()`, `display_section(i)`, `display_href(href)`, `next()`, `prev()`
 (page-aware in paginated flow), `set_flow("paginated"|"scrolled")`, `flow`,
 `current_page()`, `page_count()`, `current_section_index()`, `metadata`, `toc`,
-`search()`, `set_styles(css)`, `on_relocated(cb)` (`{ index, href, page,
-page_count }`), `on_error(cb)` (errors from event handlers; `console.error`
-otherwise), `destroy()`. Pagination re-measures on window resize and when
-embedded fonts finish loading.
+`search()`, `generate_locations(n)`, `set_styles(css)`, `on_relocated(cb)`
+(`{ index, href, page, page_count, percentage }` — `percentage` is non-null
+once locations are generated), `on_error(cb)` (errors from event handlers;
+`console.error` otherwise), `destroy()`. Pagination re-measures on window
+resize and when embedded fonts finish loading.
 
 ### `JsCfi`
 
@@ -155,7 +158,6 @@ the file, not the live view.
 
 Not implemented yet, in rough priority order:
 
-- **Locations / progress %** — stable position index across the book
 - **Annotations** — persistent user highlights + notes (the `<mark>`
   injection mechanism from search highlighting is the building block)
 - **RTL & fixed-layout** — `direction` is exposed but not acted on;

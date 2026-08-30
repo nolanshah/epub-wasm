@@ -48,6 +48,26 @@ test.describe('Rendition (rendition.html)', () => {
     await expect(frame(page).locator('h1')).toHaveText('Chapter 3');
   });
 
+  test('relocated events carry a percentage once locations exist', async ({ page }) => {
+    await page.goto(PAGE);
+    await expect(page.locator('#status')).toContainText('section 1/3');
+
+    // Trigger a relocation after generate_locations has run
+    await page.locator('#next').click();
+    await expect(page.locator('#status')).toContainText('section 2/3');
+    await expect(page.locator('#status')).toContainText('%');
+
+    const pct = async () => {
+      const t = await page.locator('#status').textContent();
+      return parseInt(t.match(/(\d+)%/)[1], 10);
+    };
+    const atTwo = await pct();
+
+    await page.locator('#next').click();
+    await expect(page.locator('#status')).toContainText('section 3/3');
+    expect(await pct()).toBeGreaterThan(atTwo);
+  });
+
   test('API errors are real exceptions, not silence', async ({ page }) => {
     await page.goto(PAGE);
     await expect(page.locator('#status')).toContainText('section 1/3');
