@@ -60,8 +60,9 @@
         // Restore #loc=section:fraction, else &section=N, else the start
         const locMatch = location.hash.match(/^#loc=(\d+):([\d.]+)$/);
         const section = parseInt(params.get('section') ?? '', 10);
-        if (locMatch) r.display_section_at(+locMatch[1], +locMatch[2]);
-        else if (!isNaN(section)) r.display_section(section);
+        const clamp = (i) => Math.min(Math.max(0, i), r.section_count - 1);
+        if (locMatch) r.display_section_at(clamp(+locMatch[1]), +locMatch[2]);
+        else if (!isNaN(section)) r.display_section(clamp(section));
         else r.display();
 
         document.getElementById('prev').onclick = () => r.prev();

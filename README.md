@@ -177,6 +177,9 @@ Not implemented yet, in rough priority order:
 
 - **Annotations** — persistent user highlights + notes (the `<mark>`
   injection mechanism from search highlighting is the building block)
+- **Publisher-styles toggle** — reader geometry is force-centered today;
+  books whose inner wrappers fight the reader need a real publisher-styles
+  on/off switch
 - **Font deobfuscation** (IDPF/Adobe schemes)
 - **Streaming ZIP** — the archive is currently fully decompressed into memory
 - **npm packaging** — publish `renderer/pkg` with hand-checked `.d.ts`

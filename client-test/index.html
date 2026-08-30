@@ -555,7 +555,11 @@
             } else {
                 const doc = document.querySelector('#epub-container iframe')?.contentDocument;
                 if (!doc) return;
-                const el = (fragment && doc.getElementById(fragment)) || doc.getElementById(`section-${index}`);
+                // Scope the fragment to its section: each EPUB section is its
+                // own document, so ids like "end" legally repeat per chapter
+                // and a bare getElementById would hit the first one.
+                const el = (fragment && doc.querySelector(`#section-${index} [id="${CSS.escape(fragment)}"]`))
+                    || doc.getElementById(`section-${index}`);
                 el?.scrollIntoView({ behavior: 'smooth' });
             }
         }
