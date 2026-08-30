@@ -251,6 +251,9 @@ struct PendingWs {
     char_len: u32,
     src_start: u32,
     src_end: u32,
+    /// A tag boundary was crossed: the source span must not grow past it,
+    /// or markup spliced around ranges would swallow the tag.
+    frozen: bool,
 }
 
 struct Scanner<'a> {
@@ -389,7 +392,11 @@ impl<'a> Scanner<'a> {
     /// On a tag boundary, pending source whitespace stays pending (it may
     /// merge with a block boundary space), but its source span must not
     /// extend across the tag.
-    fn flush_ws_boundary(&mut self) {}
+    fn flush_ws_boundary(&mut self) {
+        if let Some(ws) = &mut self.pending_ws {
+            ws.frozen = true;
+        }
+    }
 
     /// Process character data between src byte offsets [start, end).
     fn character_data(&mut self, start: usize, end: usize) {
@@ -440,7 +447,9 @@ impl<'a> Scanner<'a> {
         if ch.is_whitespace() {
             match &mut self.pending_ws {
                 Some(ws) => {
-                    ws.src_end = src_end as u32;
+                    if !ws.frozen {
+                        ws.src_end = src_end as u32;
+                    }
                     if ws.chunk == chunk {
                         ws.char_len += 1;
                     }
@@ -452,6 +461,7 @@ impl<'a> Scanner<'a> {
                         char_len: 1,
                         src_start: src_start as u32,
                         src_end: src_end as u32,
+                        frozen: false,
                     });
                 }
             }
@@ -757,6 +767,30 @@ mod tests {
         let s = range_str("<p>fo<!-- c -->o</p>", "foo", 0);
         // Still one chunk: offsets 0..3
         assert_eq!(s, "epubcfi(/6/2!,/1:0,/1:3)");
+    }
+
+    #[test]
+    fn source_segments_never_contain_markup() {
+        // Splicing tags around segments must keep the document well-formed,
+        // so no segment may span a tag — including via whitespace runs that
+        // sit against a tag boundary.
+        for html in [
+            "<p>a <b>b</b></p>",
+            "<p>a</b> <b>b</p>",
+            DOC,
+            "<div>one</div> <div>two</div>",
+        ] {
+            let map = TextMap::parse(html);
+            let segs = map.source_segments(0, map.text().len());
+            for (s, e) in segs {
+                assert!(
+                    !html[s..e].contains('<') && !html[s..e].contains('>'),
+                    "segment {:?} of {:?} contains markup",
+                    &html[s..e],
+                    html
+                );
+            }
+        }
     }
 
     #[test]

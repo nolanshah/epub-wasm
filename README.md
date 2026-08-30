@@ -101,13 +101,13 @@ fully static — host it anywhere.
 | `get_section(i)` | `{ index, id, href, media_type, linear, properties }` |
 | `get_section_content(i)` | Raw XHTML exactly as stored |
 | `get_section_text(i)` | Plain text, whitespace-collapsed |
-| `render_section(i, opts?)` | **Display-ready HTML** — resources → blob URLs (CSS files have their inner `url()`s rewritten too), internal links → `data-epub-section` / `data-epub-fragment`, external links → `target="_blank"`, scripts stripped. `opts`: `{ styles?, baseStyles?, stripScripts?, resolveLinks? }` |
+| `render_section(i, opts?)` | **Display-ready HTML** — resources → blob URLs (CSS files have their inner `url()`s rewritten too), internal links → `data-epub-section` / `data-epub-fragment`, external links → `target="_blank"`, scripts stripped. `opts`: `{ styles?, baseStyles?, stripScripts?, resolveLinks?, highlights? }`; `highlights: [{start, end}]` (plain-text byte ranges, e.g. from search results) wraps matches in `<mark class="epub-highlight" data-epub-offset="start">`, correctly split across element boundaries |
 | `resolve_href(fromSection, href)` | `{ index, fragment }` or `null` — resolves any link/TOC href |
 | `section_index_for_href(href)` | Archive path, OPF-relative path or bare filename → spine index |
 | `get_resource(href)` / `get_resource_url(href)` | Resource bytes / cached blob URL |
 | `media_type(href)` | MIME type (manifest first, extension fallback) |
 | `get_cover()` / `get_cover_url()` | Cover image bytes / blob URL |
-| `search(query, opts?)` | `[{ section_index, matched_text, excerpt, offset, cfi }]` — `cfi` is a **range CFI string** (e.g. `epubcfi(/6/4!/4/2,/1:5,/1:11)`) targeting the matched text in the raw document. `opts`: `{ caseInsensitive?, maxResults?, contextChars? }` (plain object, reusable) |
+| `search(query, opts?)` | `[{ section_index, matched_text, excerpt, offset, len, cfi }]` — `cfi` is a **range CFI string** (e.g. `epubcfi(/6/4!/4/2,/1:5,/1:11)`) targeting the matched text in the raw document; `{start: offset, end: offset + len}` feeds straight into `render_section` highlights. `opts`: `{ caseInsensitive?, maxResults?, contextChars? }` (plain object, reusable) |
 | `revoke_resources()` | Release all blob URLs |
 
 ### `Rendition`
@@ -156,7 +156,8 @@ the file, not the live view.
 Not implemented yet, in rough priority order:
 
 - **Locations / progress %** — stable position index across the book
-- **Highlights & annotations** — ranges + overlay rendering
+- **Annotations** — persistent user highlights + notes (the `<mark>`
+  injection mechanism from search highlighting is the building block)
 - **RTL & fixed-layout** — `direction` is exposed but not acted on;
   pre-paginated (`rendition:layout`) books render as reflowable
 - **Font deobfuscation** (IDPF/Adobe schemes)

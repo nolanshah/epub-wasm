@@ -118,6 +118,36 @@ test.describe('client reader (index.html)', () => {
     await expect(frame(page).locator('.epub-section')).toHaveCount(3);
   });
 
+  test('search finds matches, jumps to them, and highlights all in section', async ({ page }) => {
+    await page.goto(READER);
+    await expect(frame(page).locator('h1')).toHaveText('Chapter 1');
+
+    await page.fill('#search-input', 'xylophone');
+    await page.press('#search-input', 'Enter');
+
+    // "xylophone quartz xylophone" in chapter 2 → 2 results
+    await expect(page.locator('.result-item')).toHaveCount(2);
+    await expect(page.locator('.search-summary')).toHaveText('2 results');
+
+    await page.locator('.result-item').first().click();
+    await expect(page.locator('#section-num')).toHaveText('2');
+
+    const marks = frame(page).locator('mark.epub-highlight');
+    await expect(marks).toHaveCount(2);
+    await expect(marks.first()).toHaveText('xylophone');
+    await expect(marks.first()).toHaveCSS('background-color', 'rgb(255, 224, 138)');
+
+    // Navigating away drops the highlights
+    await page.locator('#next-btn').click();
+    await page.locator('#prev-btn').click();
+    await expect(frame(page).locator('mark.epub-highlight')).toHaveCount(0);
+
+    // Escape clears results
+    await page.focus('#search-input');
+    await page.press('#search-input', 'Escape');
+    await expect(page.locator('.result-item')).toHaveCount(0);
+  });
+
   test('open-another-book returns to the upload screen', async ({ page }) => {
     await page.goto(READER);
     await expect(page.locator('#reader-screen')).toBeVisible();

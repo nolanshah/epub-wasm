@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use epub_reader_core::{path, Book, Cfi, SearchOptions};
+use epub_reader_core::{path, Book, Cfi, SearchOptions, TextMap};
 
 use crate::resources::Resources;
 use crate::rewrite::{inject_into_head, rewrite_css, rewrite_html, RefKind, Reference, Replacement};
@@ -30,6 +30,16 @@ fn from_js<T: for<'de> Deserialize<'de> + Default>(value: JsValue) -> Result<T, 
     }
 }
 
+/// A byte range in the section's plain text (`Book::section_text`) to wrap
+/// in `<mark class="epub-highlight">`. Search results supply these directly:
+/// `{ start: m.offset, end: m.offset + m.len }`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct HighlightRange {
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Options for `render_section`
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -43,6 +53,10 @@ pub struct RenderOptions {
     /// Rewrite internal `<a href>` links to `href="#"` with `data-epub-*`
     /// attributes, and external links to open in a new tab. Default: true
     pub resolve_links: bool,
+    /// Plain-text ranges to highlight with `<mark>` elements. The first
+    /// mark of each range carries `data-epub-offset="<start>"` so it can be
+    /// scrolled to. Default: none
+    pub highlights: Vec<HighlightRange>,
 }
 
 impl Default for RenderOptions {
@@ -52,8 +66,60 @@ impl Default for RenderOptions {
             base_styles: true,
             strip_scripts: true,
             resolve_links: true,
+            highlights: Vec::new(),
         }
     }
+}
+
+const HIGHLIGHT_STYLES: &str = "mark.epub-highlight { background: #ffe08a; color: inherit; }";
+
+/// Splice `<mark>` elements into the raw document around each range, one
+/// mark per source segment so ranges crossing element boundaries stay
+/// well-formed.
+fn inject_marks(src: &str, map: &TextMap, ranges: &[HighlightRange]) -> String {
+    // Normalize, sort, merge overlaps
+    let mut rs: Vec<(usize, usize)> = ranges
+        .iter()
+        .filter(|r| r.start < r.end)
+        .map(|r| (r.start, r.end))
+        .collect();
+    rs.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for r in rs {
+        match merged.last_mut() {
+            Some(last) if r.0 <= last.1 => last.1 = last.1.max(r.1),
+            _ => merged.push(r),
+        }
+    }
+
+    // (position, open?, markup); applied back-to-front so positions stay valid
+    let mut inserts: Vec<(usize, bool, String)> = Vec::new();
+    for (start, end) in &merged {
+        for (i, (s, t)) in map.source_segments(*start, *end).into_iter().enumerate() {
+            let open = if i == 0 {
+                format!(
+                    "<mark class=\"epub-highlight\" data-epub-offset=\"{}\">",
+                    start
+                )
+            } else {
+                "<mark class=\"epub-highlight\">".to_string()
+            };
+            inserts.push((s, true, open));
+            inserts.push((t, false, "</mark>".to_string()));
+        }
+    }
+
+    // Descending by position; at equal positions apply the open first so the
+    // close ends up before it in the final string (…</mark><mark>…).
+    inserts.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+
+    let mut out = src.to_string();
+    for (pos, _, markup) in inserts {
+        if pos <= out.len() {
+            out.insert_str(pos, &markup);
+        }
+    }
+    out
 }
 
 const BASE_STYLES: &str = "img, svg, video { max-width: 100%; height: auto; }";
@@ -223,8 +289,13 @@ impl JsBook {
     }
 
     pub(crate) fn render_with(&mut self, index: usize, opts: &RenderOptions) -> Result<String, JsValue> {
-        let content = self.inner.section_content(index).map_err(js_err)?.to_string();
+        let mut content = self.inner.section_content(index).map_err(js_err)?.to_string();
         let section_dir = self.inner.section(index).unwrap().base_path().to_string();
+
+        if !opts.highlights.is_empty() {
+            let map = self.inner.section_map(index).map_err(js_err)?;
+            content = inject_marks(&content, map, &opts.highlights);
+        }
 
         let Self { inner, resources } = self;
         let mut first_err: Option<JsValue> = None;
@@ -297,6 +368,11 @@ impl JsBook {
         if opts.base_styles {
             head.push_str("<style>");
             head.push_str(BASE_STYLES);
+            head.push_str("</style>");
+        }
+        if !opts.highlights.is_empty() {
+            head.push_str("<style>");
+            head.push_str(HIGHLIGHT_STYLES);
             head.push_str("</style>");
         }
         if let Some(css) = &opts.styles {

@@ -51,6 +51,9 @@ pub struct SearchMatch {
     /// Byte offset of the match within the section's plain text
     /// (as returned by `Book::section_text`)
     pub offset: usize,
+    /// Byte length of the match within the section's plain text. Pass
+    /// `{ start: offset, end: offset + len }` as a render highlight.
+    pub len: usize,
 }
 
 /// Find `query` in `text`, returning `(byte_offset, byte_len)` pairs.
@@ -142,6 +145,7 @@ fn build_match(
         matched_text: text[offset..end].to_string(),
         excerpt,
         offset,
+        len,
     }
 }
 

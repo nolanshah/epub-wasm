@@ -9,7 +9,7 @@ mod rendition;
 mod resources;
 pub mod rewrite;
 
-pub use bindings::{JsBook, JsCfi, RenderOptions};
+pub use bindings::{HighlightRange, JsBook, JsCfi, RenderOptions};
 pub use rendition::Rendition;
 
 use wasm_bindgen::prelude::*;

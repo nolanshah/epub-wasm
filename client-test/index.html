@@ -150,6 +150,32 @@
         .toc-item.active { color: #111; font-weight: 500; }
         .toc-children { margin-left: 1rem; }
 
+        .search-box { margin-bottom: 1rem; }
+        .search-box input {
+            width: 100%;
+            padding: 0.375rem 0.5rem;
+            border: 1px solid #ddd;
+            font-size: 0.8125rem;
+            outline: none;
+        }
+        .search-box input:focus { border-color: #111; }
+        #search-results { margin-bottom: 1rem; }
+        .search-summary {
+            font-size: 0.6875rem;
+            color: #888;
+            margin-bottom: 0.5rem;
+        }
+        .result-item {
+            padding: 0.375rem 0;
+            cursor: pointer;
+            font-size: 0.75rem;
+            color: #444;
+            border-bottom: 1px solid #f5f5f5;
+        }
+        .result-item:hover { color: #111; }
+        .result-item .where { color: #999; font-size: 0.6875rem; }
+        .result-item mark { background: #ffe08a; color: inherit; }
+
         .viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
         #epub-container { flex: 1; background: #fff; overflow: hidden; }
         #epub-container iframe { width: 100%; height: 100%; border: none; }
@@ -248,6 +274,10 @@
         </div>
         <div class="main">
             <div class="sidebar" id="sidebar">
+                <div class="search-box">
+                    <input id="search-input" type="search" placeholder="Search book…  (Enter)">
+                </div>
+                <div id="search-results" hidden></div>
                 <h2>Contents</h2>
                 <div id="toc"></div>
             </div>
@@ -349,15 +379,55 @@
             iframe.srcdoc = html;
         }
 
-        function loadSection(index, fragment = null) {
+        function loadSection(index, fragment = null, highlight = null) {
             if (index < 0 || index >= sectionCount) return;
             currentSection = index;
-            const html = book.render_section(index, { styles: READER_CSS });
+            const html = book.render_section(index, {
+                styles: READER_CSS,
+                highlights: highlight?.ranges ?? [],
+            });
             showInIframe(html, (doc) => {
-                if (fragment) doc.getElementById(fragment)?.scrollIntoView();
+                if (highlight?.scrollTo !== undefined) {
+                    doc.querySelector(`mark[data-epub-offset="${highlight.scrollTo}"]`)
+                        ?.scrollIntoView({ block: 'center' });
+                } else if (fragment) {
+                    doc.getElementById(fragment)?.scrollIntoView();
+                }
             });
             updateStatus();
             highlightTocItem(book.sections[index].href);
+        }
+
+        // --- Search ---
+        let searchMatches = [];
+
+        function runSearch(query) {
+            const box = $('search-results');
+            searchMatches = query ? book.search(query, { maxResults: 200 }) : [];
+            if (!query) {
+                box.hidden = true;
+                box.innerHTML = '';
+                return;
+            }
+            const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+            let html = `<div class="search-summary">${searchMatches.length} result${searchMatches.length === 1 ? '' : 's'}</div>`;
+            html += searchMatches.map((m, i) => {
+                const ex = esc(m.excerpt).replace(esc(m.matched_text), `<mark>${esc(m.matched_text)}</mark>`);
+                return `<div class="result-item" data-result="${i}">
+                    <div class="where">Section ${m.section_index + 1}</div>${ex}</div>`;
+            }).join('');
+            box.innerHTML = html;
+            box.hidden = false;
+        }
+
+        function jumpToResult(i) {
+            const m = searchMatches[i];
+            if (!m) return;
+            if (viewMode !== 'chapter') setViewMode('chapter');
+            const ranges = searchMatches
+                .filter((x) => x.section_index === m.section_index)
+                .map((x) => ({ start: x.offset, end: x.offset + x.len }));
+            loadSection(m.section_index, null, { ranges, scrollTo: m.offset });
         }
 
         function loadAllSections(fragment = null, sectionIndex = null) {
@@ -472,6 +542,16 @@
                 if (!item) return;
                 const result = findSectionByHref(item.dataset.href);
                 if (result) goTo(result.index, result.fragment);
+            });
+
+            $('search-input').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') runSearch(e.target.value.trim());
+                else if (e.key === 'Escape') { e.target.value = ''; runSearch(''); }
+            });
+            $('search-input').addEventListener('search', (e) => runSearch(e.target.value.trim()));
+            $('search-results').addEventListener('click', (e) => {
+                const item = e.target.closest('.result-item');
+                if (item) jumpToResult(parseInt(item.dataset.result, 10));
             });
 
             $('toc-toggle').addEventListener('click', toggleSidebar);
