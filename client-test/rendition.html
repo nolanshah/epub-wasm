@@ -41,14 +41,28 @@
             const pct = percentage == null ? '' : ` · ${Math.round(percentage)}%`;
             document.getElementById('status').textContent =
                 `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})${pages}${pct}`;
+            // Persist the position (page granularity) in the URL
+            const fraction = page_count > 1 ? (page / page_count).toFixed(4) : '0';
+            history.replaceState(null, '', `#loc=${index}:${fraction}`);
         });
         r.generate_locations(600);
         r.on_error((e) => {
             document.getElementById('status').textContent = 'Error: ' + e;
         });
 
+        // &flow=paginated|scrolled selects the flow up front
+        const wantFlow = params.get('flow');
+        if (wantFlow === 'paginated' || wantFlow === 'scrolled') {
+            r.set_flow(wantFlow);
+            document.getElementById('flow').textContent = wantFlow;
+        }
+
+        // Restore #loc=section:fraction, else &section=N, else the start
+        const locMatch = location.hash.match(/^#loc=(\d+):([\d.]+)$/);
         const section = parseInt(params.get('section') ?? '', 10);
-        if (!isNaN(section)) r.display_section(section); else r.display();
+        if (locMatch) r.display_section_at(+locMatch[1], +locMatch[2]);
+        else if (!isNaN(section)) r.display_section(section);
+        else r.display();
 
         document.getElementById('prev').onclick = () => r.prev();
         document.getElementById('next').onclick = () => r.next();

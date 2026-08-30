@@ -11,10 +11,11 @@ use web_sys::{Element, Event, HtmlElement, HtmlIFrameElement};
 
 use crate::bindings::{js_err, JsBook, RenderOptions};
 
-/// Horizontal/vertical page padding in px. The column gap is 2×PAD so the
-/// page stride is exactly `page_width + GAP` and margins look symmetric.
+/// Minimum page padding in px.
 const PAD: i32 = 24;
-const GAP: i32 = 2 * PAD;
+/// Maximum column (text measure) width in px; wider viewports center the
+/// column with larger side margins instead of stretching the line length.
+const MAX_COL: i32 = 720;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
@@ -22,12 +23,15 @@ enum Flow {
     Paginated,
 }
 
-/// Which page to show once the section finishes loading.
+/// Which position to show once the section finishes loading.
 #[derive(Debug, Clone, Copy)]
 enum PendingPage {
     First,
     Last,
     At(usize),
+    /// Fraction (0.0–1.0) through the section: a page in paginated flow,
+    /// a scroll offset in scrolled flow.
+    Fraction(f64),
 }
 
 struct Inner {
@@ -48,6 +52,8 @@ struct Inner {
     fxl: bool,
     /// page stride in px (page width + gap); 0 when not paginated/measurable
     stride: f64,
+    /// horizontal page padding actually used (grows to center the column)
+    pad: f64,
     /// last measured iframe size, to coalesce resize events
     last_size: (i32, i32),
     on_relocated: Option<js_sys::Function>,
@@ -119,6 +125,7 @@ impl Rendition {
             rtl: false,
             fxl: false,
             stride: 0.0,
+            pad: PAD as f64,
             last_size: (0, 0),
             on_relocated: None,
             on_error: None,
@@ -220,9 +227,15 @@ impl Rendition {
                         PendingPage::First => 0,
                         PendingPage::Last => inner.page_count - 1,
                         PendingPage::At(p) => p.min(inner.page_count - 1),
+                        PendingPage::Fraction(f) => ((f.clamp(0.0, 1.0)
+                            * inner.page_count as f64)
+                            .round() as usize)
+                            .min(inner.page_count - 1),
                     };
                     if let (Some(doc), Some(frag)) = (&doc, &fragment) {
-                        if let Some(p) = page_of_fragment(doc, frag, inner.stride, inner.rtl) {
+                        if let Some(p) =
+                            page_of_fragment(doc, frag, inner.stride, inner.rtl, inner.pad)
+                        {
                             page = p.min(inner.page_count - 1);
                         }
                     }
@@ -244,7 +257,15 @@ impl Rendition {
                                 el.scroll_into_view();
                             }
                         } else if let Some(el) = doc.document_element() {
-                            el.set_scroll_top(0);
+                            match inner.pending_page {
+                                PendingPage::Fraction(f) => {
+                                    let range = (el.scroll_height() - el.client_height()).max(0);
+                                    el.set_scroll_top(
+                                        (f.clamp(0.0, 1.0) * range as f64) as i32,
+                                    );
+                                }
+                                _ => el.set_scroll_top(0),
+                            }
                         }
                     }
                 }
@@ -305,6 +326,14 @@ impl Rendition {
     /// Display a section by index
     pub fn display_section(&self, index: usize) -> Result<(), JsValue> {
         display_at(&self.inner, index, None, PendingPage::First)
+    }
+
+    /// Display a section at a fraction (0.0–1.0) of the way through it —
+    /// a page in paginated flow, a scroll offset in scrolled flow. Use with
+    /// the `page / page_count` from `relocated` events to restore a saved
+    /// reading position.
+    pub fn display_section_at(&self, index: usize, fraction: f64) -> Result<(), JsValue> {
+        display_at(&self.inner, index, None, PendingPage::Fraction(fraction))
     }
 
     /// Display the target of an href (e.g. a TOC entry's `href`)
@@ -609,35 +638,44 @@ fn page_of_fragment(
     fragment: &str,
     stride: f64,
     rtl: bool,
+    pad: f64,
 ) -> Option<usize> {
     let el = doc.get_element_by_id(fragment)?;
     // Cross-realm: unchecked cast (see the click handler note).
     let el: HtmlElement = el.unchecked_into();
     let left = el.offset_left() as f64;
     let page = if rtl {
-        ((PAD as f64 - left) / stride).ceil().max(0.0)
+        ((pad - left) / stride).ceil().max(0.0)
     } else {
-        ((left - PAD as f64) / stride).max(0.0).floor()
+        ((left - pad) / stride).max(0.0).floor()
     };
     Some(page as usize)
 }
 
-fn paginated_css(page_width: i32, page_height: i32) -> String {
+/// Column layout for one page: the text column is capped at MAX_COL and
+/// centered by growing the side padding. The gap equals 2×side so the page
+/// stride is `column + gap` and the laid-out width stays an exact multiple
+/// of the stride. Geometry is `!important`: if publisher or user CSS could
+/// cap the body width (a stray `max-width`), the real column width would
+/// diverge from the computed stride and page turns would drift.
+fn paginated_css(col_width: i32, page_height: i32, side: i32) -> String {
     format!(
-        r#"html, body {{ margin: 0; height: 100%; overflow: hidden; }}
+        r#"html, body {{ margin: 0 !important; height: 100% !important; overflow: hidden !important; }}
 body {{
-    box-sizing: content-box;
-    padding: {pad}px;
-    width: {w}px;
-    height: {h}px;
-    column-width: {w}px;
-    column-gap: {gap}px;
-    column-fill: auto;
+    box-sizing: content-box !important;
+    padding: {vpad}px {side}px !important;
+    width: {w}px !important;
+    max-width: none !important;
+    height: {h}px !important;
+    column-width: {w}px !important;
+    column-gap: {gap}px !important;
+    column-fill: auto !important;
 }}
-img, svg, video {{ max-width: {w}px; max-height: {h}px; }}"#,
-        pad = PAD,
-        gap = GAP,
-        w = page_width,
+img, svg, video {{ max-width: {w}px !important; max-height: {h}px !important; }}"#,
+        vpad = PAD,
+        side = side,
+        gap = 2 * side,
+        w = col_width,
         h = page_height,
     )
 }
@@ -645,17 +683,20 @@ img, svg, video {{ max-width: {w}px; max-height: {h}px; }}"#,
 /// CSS scaling a fixed-layout page of design size (w, h) into a viewport of
 /// (vw, vh), centered. Margins position the box pre-transform; with
 /// transform-origin 0 0 the scaled box lands visually centered.
+/// Geometry is `!important`: neither publisher CSS nor user styles may
+/// break the scaling math.
 fn fxl_css(w: f64, h: f64, vw: f64, vh: f64) -> String {
     let k = (vw / w).min(vh / h);
     format!(
-        r#"html, body {{ margin: 0; padding: 0; overflow: hidden; }}
+        r#"html, body {{ margin: 0 !important; padding: 0 !important; overflow: hidden !important; }}
 body {{
-    width: {w}px;
-    height: {h}px;
+    width: {w}px !important;
+    max-width: none !important;
+    height: {h}px !important;
     transform: scale({k});
     transform-origin: 0 0;
-    margin-left: {ml}px;
-    margin-top: {mt}px;
+    margin-left: {ml}px !important;
+    margin-top: {mt}px !important;
 }}"#,
         w = w,
         h = h,
@@ -678,7 +719,13 @@ fn display_at(
     }
 
     // Measure the viewport before rendering (the iframe is already laid out).
+    // User styles come FIRST so flow geometry (appended after, !important)
+    // always wins.
     let mut styles = String::new();
+    if let Some(css) = &inner.styles {
+        styles.push_str(css);
+        styles.push('\n');
+    }
     inner.stride = 0.0;
     inner.rtl = false;
     inner.fxl = inner.book.book().is_pre_paginated(index);
@@ -704,16 +751,14 @@ fn display_at(
         }
         // No numeric viewport meta: leave the page at natural size.
     } else if inner.flow == Flow::Paginated {
-        let w = vw - 2 * PAD;
+        let col = (vw - 2 * PAD).min(MAX_COL);
+        let side = (vw - col) / 2;
         let h = vh - 2 * PAD;
-        if w > 0 && h > 0 {
-            inner.stride = (w + GAP) as f64;
-            styles.push_str(&paginated_css(w, h));
+        if col > 0 && h > 0 {
+            inner.stride = (col + 2 * side) as f64;
+            inner.pad = side as f64;
+            styles.push_str(&paginated_css(col, h, side));
         }
-    }
-    if let Some(css) = &inner.styles {
-        styles.push('\n');
-        styles.push_str(css);
     }
 
     let opts = RenderOptions {

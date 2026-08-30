@@ -14,8 +14,8 @@
         }
 
         /* Icons */
-        .icon { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.5; fill: none; }
-        .icon-lg { width: 48px; height: 48px; stroke-width: 1; }
+        .icon { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.5; fill: none; display: block; }
+        .icon-lg { width: 48px; height: 48px; stroke-width: 1; margin: 0 auto; }
 
         /* Upload Screen */
         .upload-screen {
@@ -94,7 +94,7 @@
             background: none;
             color: #666;
             border: 1px solid #ddd;
-            padding: 0.375rem 0.5rem;
+            padding: 0.4375rem;
             cursor: pointer;
             font-size: 0.75rem;
             display: flex;
@@ -204,18 +204,13 @@
             <line x1="3" y1="18" x2="21" y2="18"/>
         </symbol>
         <symbol id="icon-chapters" viewBox="0 0 24 24">
-            <line x1="8" y1="6" x2="21" y2="6"/>
-            <line x1="8" y1="12" x2="21" y2="12"/>
-            <line x1="8" y1="18" x2="21" y2="18"/>
-            <line x1="3" y1="6" x2="3.01" y2="6"/>
-            <line x1="3" y1="12" x2="3.01" y2="12"/>
-            <line x1="3" y1="18" x2="3.01" y2="18"/>
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+            <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
         </symbol>
         <symbol id="icon-scroll" viewBox="0 0 24 24">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="16" y1="13" x2="8" y2="13"/>
-            <line x1="16" y1="17" x2="8" y2="17"/>
+            <rect x="6" y="2" width="12" height="20" rx="2"/>
+            <line x1="12" y1="7" x2="12" y2="14"/>
+            <polyline points="9 12 12 15 15 12"/>
         </symbol>
         <symbol id="icon-left" viewBox="0 0 24 24">
             <polyline points="15 18 9 12 15 6"/>
@@ -293,8 +288,19 @@
         // blob-URL rewriting, link resolution. This file is just UI.
         import init, { JsBook } from './pkg/epub_reader_renderer.js';
 
+        // Geometry is !important so publisher CSS (fixed body widths, side
+        // margins) can't leave the text column off-center; typography stays
+        // overridable so the book's own fonts win where it sets them.
         const READER_CSS = `
-            body { font-family: Georgia, 'Times New Roman', serif; font-size: 18px; line-height: 1.7; max-width: 680px; margin: 0 auto; padding: 2rem; color: #222; }
+            body {
+                font-family: Georgia, 'Times New Roman', serif; font-size: 18px; line-height: 1.7; color: #222;
+                width: auto !important;
+                max-width: 680px !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+                padding: 2rem !important;
+                box-sizing: border-box;
+            }
             h1, h2, h3, h4, h5, h6 { font-family: -apple-system, sans-serif; margin-top: 1.5em; font-weight: 500; }
             a { color: #111; }
             .epub-section { scroll-margin-top: 20px; }
@@ -341,7 +347,7 @@
             setTimeout(() => {
                 try {
                     book?.generate_locations(1024);
-                    updateStatus();
+                    setLocation(currentSection, lastFraction);
                 } catch (e) { /* progress stays hidden */ }
             }, 50);
         }
@@ -388,7 +394,64 @@
             iframe.srcdoc = html;
         }
 
-        function loadSection(index, fragment = null, highlight = null) {
+        // --- Reading position: tracked live, saved in the URL fragment ---
+        let lastFraction = 0;
+
+        function parseLocHash() {
+            const m = location.hash.match(/^#loc=(\d+):([\d.]+)$/);
+            return m ? { section: +m[1], fraction: Math.min(1, +m[2]) } : null;
+        }
+
+        function setLocation(index, fraction) {
+            lastFraction = fraction;
+            const pct = book?.percentage_at(index, fraction);
+            $('progress').textContent = pct === undefined ? '' : `${Math.round(pct)}%`;
+            history.replaceState(null, '', `#loc=${index}:${fraction.toFixed(4)}`);
+        }
+
+        function throttled(fn) {
+            let t = null;
+            return () => {
+                if (t) return;
+                t = setTimeout(() => { t = null; fn(); }, 150);
+            };
+        }
+
+        function trackChapterScroll(doc) {
+            const el = doc.scrollingElement || doc.documentElement;
+            doc.addEventListener('scroll', throttled(() => {
+                // The throttle timer can outlive the iframe (mode switch,
+                // section change): never act on a detached document.
+                if (viewMode !== 'chapter' || !doc.defaultView) return;
+                const range = el.scrollHeight - el.clientHeight;
+                setLocation(currentSection, range > 0 ? el.scrollTop / range : 0);
+            }));
+        }
+
+        function trackSingleScroll(doc) {
+            const el = doc.scrollingElement || doc.documentElement;
+            doc.addEventListener('scroll', throttled(() => {
+                if (viewMode !== 'single' || !doc.defaultView) return;
+                const wrappers = doc.querySelectorAll('.epub-section');
+                let active = 0, fraction = 0;
+                wrappers.forEach((w, i) => {
+                    if (w.offsetTop <= el.scrollTop + 10) {
+                        active = i;
+                        // Same semantics as chapter mode: fraction of the
+                        // section's scrollable range, so mode switches and
+                        // saved URLs round-trip cleanly.
+                        const range = Math.max(1, w.offsetHeight - el.clientHeight);
+                        fraction = Math.min(1, Math.max(0, (el.scrollTop - w.offsetTop) / range));
+                    }
+                });
+                currentSection = active;
+                $('section-num').textContent = active + 1;
+                highlightTocItem(book.sections[active].href);
+                setLocation(active, fraction);
+            }));
+        }
+
+        function loadSection(index, fragment = null, highlight = null, fraction = null) {
             if (index < 0 || index >= sectionCount) return;
             currentSection = index;
             const html = book.render_section(index, {
@@ -396,12 +459,17 @@
                 highlights: highlight?.ranges ?? [],
             });
             showInIframe(html, (doc) => {
+                const el = doc.scrollingElement || doc.documentElement;
                 if (highlight?.scrollTo !== undefined) {
                     doc.querySelector(`mark[data-epub-offset="${highlight.scrollTo}"]`)
                         ?.scrollIntoView({ block: 'center' });
                 } else if (fragment) {
                     doc.getElementById(fragment)?.scrollIntoView();
+                } else if (fraction) {
+                    el.scrollTop = fraction * Math.max(0, el.scrollHeight - el.clientHeight);
                 }
+                setLocation(index, fraction ?? 0);
+                trackChapterScroll(doc);
             });
             updateStatus();
             highlightTocItem(book.sections[index].href);
@@ -439,7 +507,7 @@
             loadSection(m.section_index, null, { ranges, scrollTo: m.offset });
         }
 
-        function loadAllSections(fragment = null, sectionIndex = null) {
+        function loadAllSections(fragment = null, sectionIndex = null, fraction = null) {
             let allContent = '';
             for (let i = 0; i < sectionCount; i++) {
                 const rendered = book.render_section(i, { baseStyles: false });
@@ -453,9 +521,18 @@
             </style></head><body>${allContent}</body></html>`;
 
             showInIframe(html, (doc) => {
-                const el = (fragment && doc.getElementById(fragment)) ||
-                           (sectionIndex !== null && doc.getElementById(`section-${sectionIndex}`));
-                if (el) el.scrollIntoView();
+                const scroller = doc.scrollingElement || doc.documentElement;
+                const wrapper = sectionIndex !== null && doc.getElementById(`section-${sectionIndex}`);
+                if (fragment && doc.getElementById(fragment)) {
+                    doc.getElementById(fragment).scrollIntoView();
+                } else if (wrapper && fraction) {
+                    scroller.scrollTop = wrapper.offsetTop
+                        + fraction * Math.max(0, wrapper.offsetHeight - scroller.clientHeight);
+                } else if (wrapper) {
+                    wrapper.scrollIntoView();
+                }
+                setLocation(sectionIndex ?? 0, fraction ?? 0);
+                trackSingleScroll(doc);
             });
             $('prev-btn').disabled = true;
             $('next-btn').disabled = true;
@@ -486,8 +563,6 @@
         function updateStatus() {
             $('section-num').textContent = currentSection + 1;
             $('section-total').textContent = sectionCount;
-            const pct = book?.percentage_at(currentSection, 0);
-            $('progress').textContent = pct === undefined ? '' : `${Math.round(pct)}%`;
         }
 
         function highlightTocItem(href) {
@@ -503,7 +578,7 @@
             $('toc-toggle').classList.toggle('active', sidebarVisible);
         }
 
-        function setViewMode(mode) {
+        function setViewMode(mode, fraction = null) {
             viewMode = mode;
             $('mode-chapter').classList.toggle('active', mode === 'chapter');
             $('mode-single').classList.toggle('active', mode === 'single');
@@ -511,9 +586,9 @@
             if (mode === 'chapter') {
                 $('prev-btn').disabled = currentSection === 0;
                 $('next-btn').disabled = currentSection >= sectionCount - 1;
-                loadSection(currentSection);
+                loadSection(currentSection, null, null, fraction);
             } else {
-                loadAllSections(null, currentSection);
+                loadAllSections(null, currentSection, fraction);
             }
         }
 
@@ -528,6 +603,8 @@
             $('upload-screen').classList.remove('hidden');
             $('epub-container').innerHTML = '';
             $('progress').textContent = '';
+            lastFraction = 0;
+            history.replaceState(null, '', location.pathname + location.search);
             $('mode-chapter').classList.add('active');
             $('mode-single').classList.remove('active');
         }
@@ -574,8 +651,9 @@
                 if (viewMode === 'chapter' && currentSection < sectionCount - 1) loadSection(currentSection + 1);
             });
 
-            $('mode-chapter').addEventListener('click', () => setViewMode('chapter'));
-            $('mode-single').addEventListener('click', () => setViewMode('single'));
+            // Switching modes keeps the current reading position
+            $('mode-chapter').addEventListener('click', () => setViewMode('chapter', lastFraction));
+            $('mode-single').addEventListener('click', () => setViewMode('single', lastFraction));
             $('new-book-btn').addEventListener('click', resetToUpload);
 
             document.addEventListener('keydown', (e) => {
@@ -597,9 +675,20 @@
                     const resp = await fetch(loadUrl);
                     if (!resp.ok) throw new Error('HTTP ' + resp.status);
                     openBook(new Uint8Array(await resp.arrayBuffer()));
+
+                    // Restore position: #loc=section:fraction wins over &section=N
+                    const loc = parseLocHash();
                     const section = parseInt(params.get('section') ?? '', 10);
-                    if (!isNaN(section)) loadSection(section);
-                    if (params.get('mode') === 'single') setViewMode('single');
+                    if (loc) currentSection = Math.min(loc.section, sectionCount - 1);
+                    else if (!isNaN(section)) currentSection = Math.min(section, sectionCount - 1);
+
+                    if (params.get('mode') === 'single') {
+                        setViewMode('single', loc?.fraction ?? null);
+                    } else if (loc) {
+                        loadSection(currentSection, null, null, loc.fraction);
+                    } else if (!isNaN(section)) {
+                        loadSection(currentSection);
+                    }
                 } catch (e) {
                     $('loading').textContent = 'Failed to fetch EPUB: ' + e;
                 }

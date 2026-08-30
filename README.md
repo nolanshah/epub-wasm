@@ -84,8 +84,12 @@ cd client-test && ./serve.sh    # then open http://localhost:8080
 ```
 
 Upload an EPUB, or deep-link one: `http://localhost:8080/?load=<epub-url>&section=3`
-(the URL must be same-origin or CORS-enabled). The `client-test/` directory is
-fully static — host it anywhere.
+(the URL must be same-origin or CORS-enabled). The reader continuously saves
+your position in the URL fragment (`#loc=<section>:<fraction>`) — reload or
+share the link and it restores the section, scroll offset and progress %.
+`rendition.html` does the same at page granularity and accepts
+`&flow=paginated|scrolled`. The `client-test/` directory is fully static —
+host it anywhere.
 
 ## API
 
@@ -117,7 +121,9 @@ fully static — host it anywhere.
 
 Reader controller: one iframe, scrolled **or paginated** (CSS multi-column)
 flow, internal-link and TOC navigation. `new Rendition(bytes, containerElement)`,
-`display()`, `display_section(i)`, `display_href(href)`, `next()`, `prev()`
+`display()`, `display_section(i)`, `display_section_at(i, fraction)` (restore a saved
+position: a page in paginated flow, a scroll offset in scrolled flow),
+`display_href(href)`, `next()`, `prev()`
 (page-aware in paginated flow), `set_flow("paginated"|"scrolled")`, `flow`,
 `current_page()`, `page_count()`, `current_section_index()`, `metadata`, `toc`,
 `search()`, `generate_locations(n)`, `set_styles(css)`, `on_relocated(cb)`
@@ -126,7 +132,10 @@ once locations are generated), `on_error(cb)` (errors from event handlers;
 `console.error` otherwise), `destroy()`. Pagination re-measures on window
 resize and when embedded fonts finish loading.
 
-RTL: `next()`/`prev()` always mean reading order; content computing to
+Paginated flow caps the text column at a readable 720px and centers it;
+flow/scaling geometry is injected with `!important` so publisher CSS cannot
+skew the page stride (a full publisher-styles on/off toggle is on the
+roadmap). RTL: `next()`/`prev()` always mean reading order; content computing to
 `direction: rtl` flips the internal paging math automatically, and the demos
 flip arrow keys per the spine's `page-progression-direction`. Fixed-layout
 (`rendition:layout` pre-paginated, incl. per-itemref overrides): sections are

@@ -147,6 +147,44 @@ test.describe('paginated flow', () => {
     expect(info.page).toBeGreaterThan(1);
   });
 
+  test('paginated column is centered with a readable measure', async ({ page }) => {
+    await page.goto(PAGE + '&flow=paginated&section=2');
+    await expect(page.locator('#status')).toContainText('page 1/');
+
+    const m = await frame(page).locator('body').evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        pl: parseFloat(cs.paddingLeft),
+        pr: parseFloat(cs.paddingRight),
+        w: parseFloat(cs.width),
+      };
+    });
+    expect(Math.abs(m.pl - m.pr)).toBeLessThanOrEqual(1);
+    expect(m.pl).toBeGreaterThan(100); // 1280px viewport → generous side margins
+    expect(m.w).toBeLessThanOrEqual(720); // readable measure, not full width
+  });
+
+  test('#loc restores a paginated position mid-section', async ({ page }) => {
+    await page.goto('/rendition.html?load=fixture.epub&flow=paginated#loc=2:0.5');
+    await expect(page.locator('#status')).toContainText('section 3/3');
+    const info = await pageInfo(page);
+    expect(info.count).toBeGreaterThan(1);
+    expect(info.page).toBeGreaterThan(1);
+    expect(info.page).toBeLessThanOrEqual(info.count);
+  });
+
+  test('#loc restores a scrolled position', async ({ page }) => {
+    await page.goto('/rendition.html?load=fixture.epub#loc=1:0.8');
+    await expect(page.locator('#status')).toContainText('section 2/3');
+    await expect
+      .poll(() =>
+        frame(page)
+          .locator('body')
+          .evaluate((el) => el.ownerDocument.documentElement.scrollTop),
+      )
+      .toBeGreaterThan(200);
+  });
+
   test('internal links still navigate in paginated flow', async ({ page }) => {
     await page.goto(PAGE);
     await page.locator('#flow').click();

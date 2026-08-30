@@ -161,6 +161,75 @@ test.describe('client reader (index.html)', () => {
     expect(parseInt(text, 10)).toBeGreaterThan(0);
   });
 
+  test('reading position is saved in the URL and restored on load', async ({ page }) => {
+    await page.goto(READER);
+    await page.locator('#next-btn').click();
+    await expect(page.locator('#section-num')).toHaveText('2');
+    await expect(page).toHaveURL(/#loc=1:/);
+
+    // Scroll deep into the long chapter; the fragment tracks it
+    await frame(page).locator('#end').scrollIntoViewIfNeeded();
+    await expect(page).toHaveURL(/#loc=1:0\.[5-9]|#loc=1:1\.0/);
+
+    let pctDeep = 0;
+    await expect
+      .poll(async () => {
+        pctDeep = parseInt(await page.locator('#progress').textContent(), 10);
+        return pctDeep;
+      })
+      .toBeGreaterThan(20);
+
+    // A fresh load of the saved URL restores section, scroll and progress
+    const url = page.url();
+    await page.goto('about:blank');
+    await page.goto(url);
+    await expect(page.locator('#section-num')).toHaveText('2');
+    await expect
+      .poll(() =>
+        frame(page)
+          .locator('body')
+          .evaluate((el) => el.ownerDocument.scrollingElement.scrollTop),
+      )
+      .toBeGreaterThan(300);
+    await expect
+      .poll(async () => parseInt(await page.locator('#progress').textContent(), 10))
+      .toBeGreaterThanOrEqual(pctDeep - 3);
+  });
+
+  test('mode switching keeps the reading position', async ({ page }) => {
+    await page.goto(READER + '&section=1');
+    await frame(page).locator('#end').scrollIntoViewIfNeeded();
+    await expect(page).toHaveURL(/#loc=1:0\.[5-9]|#loc=1:1\.0/);
+
+    await page.locator('#mode-single').click();
+    await expect(frame(page).locator('.epub-section')).toHaveCount(3);
+    // Still in section 2, deep into it
+    await expect(page).toHaveURL(/#loc=1:0\.[3-9]|#loc=1:1\.0/);
+
+    await page.locator('#mode-chapter').click();
+    await expect(page.locator('#section-num')).toHaveText('2');
+    await expect
+      .poll(() =>
+        frame(page)
+          .locator('body')
+          .evaluate((el) => el.ownerDocument.scrollingElement.scrollTop),
+      )
+      .toBeGreaterThan(100);
+  });
+
+  test('content column is horizontally centered', async ({ page }) => {
+    await page.goto(READER);
+    const gaps = await frame(page)
+      .locator('body')
+      .evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const vw = el.ownerDocument.documentElement.clientWidth;
+        return { left: r.left, right: vw - r.right };
+      });
+    expect(Math.abs(gaps.left - gaps.right)).toBeLessThanOrEqual(2);
+    expect(gaps.left).toBeGreaterThan(50);
+  });
+
   test('open-another-book returns to the upload screen', async ({ page }) => {
     await page.goto(READER);
     await expect(page.locator('#reader-screen')).toBeVisible();
