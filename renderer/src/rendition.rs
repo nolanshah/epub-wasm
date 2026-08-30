@@ -49,9 +49,12 @@ impl Rendition {
         style.set_property("height", "100%")?;
         style.set_property("border", "none")?;
         style.set_property("display", "block")?;
+        // `allow-scripts` is required or the browser suppresses ALL event
+        // listeners in the iframe document, including ones we attach from
+        // the parent (book scripts are stripped at render time regardless).
         iframe.set_attribute(
             "sandbox",
-            "allow-same-origin allow-popups allow-popups-to-escape-sandbox",
+            "allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox",
         )?;
         container.append_child(&iframe)?;
 
@@ -70,9 +73,14 @@ impl Rendition {
         // Click handler: created once, attached to every loaded document.
         let click_rc = Rc::clone(&inner);
         let onclick = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
-            let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            let Some(target) = event.target() else {
                 return;
             };
+            // The target lives in the iframe's realm, where `instanceof
+            // Element` against our window's constructor is always false —
+            // `dyn_into` would fail. Cast unchecked; `closest` erroring on a
+            // non-element is caught by the match below.
+            let target: Element = target.unchecked_into();
             let Ok(Some(link)) = target.closest("a[data-epub-section]") else {
                 return;
             };
