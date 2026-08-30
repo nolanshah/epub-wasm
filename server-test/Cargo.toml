@@ -11,14 +11,10 @@ path = "src/main.rs"
 # Server
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Core library for reading EPUB metadata
+# Core library for validating the EPUB at startup
 epub-reader-core = { path = "../core" }
-
-# Utilities
-mime_guess = "2"
-serde_json = "1"

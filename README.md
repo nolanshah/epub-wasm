@@ -9,7 +9,7 @@ happens in Rust.
 epub-wasm/
 ├── core/           # Pure Rust EPUB parsing (no WASM deps, usable server-side)
 ├── renderer/       # WASM bindings: JsBook, Rendition, JsCfi
-├── server-test/    # Axum test server (native core + web UI)
+├── server-test/    # Axum test server (serves the client UI + a book from disk)
 └── client-test/    # Static SPA demo (upload or ?load= an EPUB in the browser)
 ```
 
@@ -69,11 +69,14 @@ cargo test --workspace
 
 ## Running the demos
 
-**Test server** (loads an EPUB from disk, serves a reader UI):
+**Test server** (loads an EPUB from disk, serves the reader UI for it):
 
 ```bash
 ./target/release/epub-server-test /path/to/book.epub   # -p PORT (default 3000)
 ```
+
+It embeds `client-test/*.html` and `renderer/pkg` at compile time, so build
+the WASM before building the server.
 
 **Client-side SPA** (all parsing happens in the browser):
 
