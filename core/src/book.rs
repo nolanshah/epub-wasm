@@ -29,6 +29,8 @@ pub struct Book {
     pub toc: Vec<NavItem>,
     /// `page-progression-direction` from the spine (`ltr`, `rtl`), if declared
     pub page_progression_direction: Option<String>,
+    /// `rendition:layout` metadata (`pre-paginated` for fixed-layout books)
+    pub rendition_layout: Option<String>,
     /// Sections (loaded on demand)
     sections: Vec<Section>,
     /// The archive containing all files
@@ -104,6 +106,7 @@ impl Book {
             manifest: package.manifest,
             toc,
             page_progression_direction: package.page_progression_direction,
+            rendition_layout: package.rendition_layout,
             sections,
             archive,
             base_path,
@@ -326,6 +329,28 @@ impl Book {
     /// Navigate to a CFI
     pub fn go_to_cfi(&mut self, cfi: &Cfi) -> Result<&Section> {
         self.load_section(cfi.spine_index)
+    }
+
+    /// Whether a section is fixed-layout: per-itemref `rendition:layout-*`
+    /// properties override the book-level `rendition:layout` metadata.
+    pub fn is_pre_paginated(&self, section_index: usize) -> bool {
+        if let Some(section) = self.section(section_index) {
+            if section
+                .properties
+                .iter()
+                .any(|p| p == "rendition:layout-pre-paginated")
+            {
+                return true;
+            }
+            if section
+                .properties
+                .iter()
+                .any(|p| p == "rendition:layout-reflowable")
+            {
+                return false;
+            }
+        }
+        self.rendition_layout.as_deref() == Some("pre-paginated")
     }
 
     /// Build a stable position index: one location every `chars_per`

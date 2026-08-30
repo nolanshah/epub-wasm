@@ -580,8 +580,10 @@
 
             document.addEventListener('keydown', (e) => {
                 if (!book || viewMode !== 'chapter') return;
-                if (e.key === 'ArrowLeft') $('prev-btn').click();
-                else if (e.key === 'ArrowRight') $('next-btn').click();
+                // In RTL books the left arrow advances the reading order
+                const rtl = book.direction === 'rtl';
+                if (e.key === 'ArrowLeft') $(rtl ? 'next-btn' : 'prev-btn').click();
+                else if (e.key === 'ArrowRight') $(rtl ? 'prev-btn' : 'next-btn').click();
             });
 
             // ?load=<url> opens an EPUB straight from a URL (must be

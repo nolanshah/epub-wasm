@@ -57,9 +57,11 @@
             r.set_flow(next);
             document.getElementById('flow').textContent = next;
         };
+        // In RTL books the left arrow advances the reading order
+        const rtlBook = r.direction === 'rtl';
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'ArrowLeft') r.prev();
-            if (e.key === 'ArrowRight') r.next();
+            if (e.key === 'ArrowLeft') rtlBook ? r.next() : r.prev();
+            if (e.key === 'ArrowRight') rtlBook ? r.prev() : r.next();
         });
     </script>
 </body>

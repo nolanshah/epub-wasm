@@ -41,6 +41,11 @@ struct Inner {
     flow: Flow,
     current_page: usize,
     page_count: usize,
+    /// The loaded content computes to `direction: rtl`: columns flow
+    /// right-to-left, so paging transforms flip sign
+    rtl: bool,
+    /// Current section is fixed-layout (scaled, never columned)
+    fxl: bool,
     /// page stride in px (page width + gap); 0 when not paginated/measurable
     stride: f64,
     /// last measured iframe size, to coalesce resize events
@@ -111,6 +116,8 @@ impl Rendition {
             flow: Flow::Scrolled,
             current_page: 0,
             page_count: 1,
+            rtl: false,
+            fxl: false,
             stride: 0.0,
             last_size: (0, 0),
             on_relocated: None,
@@ -187,6 +194,26 @@ impl Rendition {
                 let fragment = inner.pending_fragment.take();
 
                 if inner.flow == Flow::Paginated && inner.stride > 0.0 {
+                    // Content-level dir="rtl" makes CSS columns flow
+                    // right-to-left (overflow extends left, offsets go
+                    // negative), so detect the computed direction and flip
+                    // the paging math. Never force a direction via CSS —
+                    // that would break bidi text in the content itself.
+                    inner.rtl = doc
+                        .as_ref()
+                        .and_then(|d| d.body())
+                        .and_then(|body| {
+                            inner
+                                .iframe
+                                .content_window()?
+                                .get_computed_style(&body)
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|cs| cs.get_property_value("direction").ok())
+                        .map(|d| d == "rtl")
+                        .unwrap_or(false);
+
                     measure_pages(&mut inner);
 
                     let mut page = match inner.pending_page {
@@ -195,7 +222,7 @@ impl Rendition {
                         PendingPage::At(p) => p.min(inner.page_count - 1),
                     };
                     if let (Some(doc), Some(frag)) = (&doc, &fragment) {
-                        if let Some(p) = page_of_fragment(doc, frag, inner.stride) {
+                        if let Some(p) = page_of_fragment(doc, frag, inner.stride, inner.rtl) {
                             page = p.min(inner.page_count - 1);
                         }
                     }
@@ -236,7 +263,7 @@ impl Rendition {
         let onresize = Closure::<dyn FnMut()>::new(move || {
             let redisplay = {
                 let mut inner = resize_rc.borrow_mut();
-                if inner.flow != Flow::Paginated {
+                if inner.flow != Flow::Paginated && !inner.fxl {
                     None
                 } else {
                     let rect = inner.iframe.get_bounding_client_rect();
@@ -359,6 +386,23 @@ impl Rendition {
             Flow::Scrolled => "scrolled".to_string(),
             Flow::Paginated => "paginated".to_string(),
         }
+    }
+
+    /// Reading direction from the spine (`"rtl"`, `"ltr"`), if declared
+    #[wasm_bindgen(getter)]
+    pub fn direction(&self) -> Option<String> {
+        self.inner
+            .borrow()
+            .book
+            .book()
+            .page_progression_direction
+            .clone()
+    }
+
+    /// `"pre-paginated"` for fixed-layout books, else `"reflowable"`
+    #[wasm_bindgen(getter)]
+    pub fn layout(&self) -> String {
+        self.inner.borrow().book.layout()
     }
 
     /// Index of the section currently displayed
@@ -547,19 +591,35 @@ fn apply_transform(inner: &Inner) {
         return;
     };
     let offset = inner.current_page as f64 * inner.stride;
-    let _ = body
-        .style()
-        .set_property("transform", &format!("translateX(-{}px)", offset));
+    // RTL columns extend leftward, so advancing moves the body rightward.
+    let value = if inner.rtl {
+        format!("translateX({}px)", offset)
+    } else {
+        format!("translateX(-{}px)", offset)
+    };
+    let _ = body.style().set_property("transform", &value);
 }
 
 /// Which page a fragment element sits on. `offsetLeft` is measured in the
 /// flowed layout and ignores the translateX, which is exactly what we need.
-fn page_of_fragment(doc: &web_sys::Document, fragment: &str, stride: f64) -> Option<usize> {
+/// In RTL column layout the first column is rightmost and later columns have
+/// decreasing (eventually negative) offsets.
+fn page_of_fragment(
+    doc: &web_sys::Document,
+    fragment: &str,
+    stride: f64,
+    rtl: bool,
+) -> Option<usize> {
     let el = doc.get_element_by_id(fragment)?;
     // Cross-realm: unchecked cast (see the click handler note).
     let el: HtmlElement = el.unchecked_into();
     let left = el.offset_left() as f64;
-    Some(((left - PAD as f64) / stride).max(0.0).floor() as usize)
+    let page = if rtl {
+        ((PAD as f64 - left) / stride).ceil().max(0.0)
+    } else {
+        ((left - PAD as f64) / stride).max(0.0).floor()
+    };
+    Some(page as usize)
 }
 
 fn paginated_css(page_width: i32, page_height: i32) -> String {
@@ -582,6 +642,29 @@ img, svg, video {{ max-width: {w}px; max-height: {h}px; }}"#,
     )
 }
 
+/// CSS scaling a fixed-layout page of design size (w, h) into a viewport of
+/// (vw, vh), centered. Margins position the box pre-transform; with
+/// transform-origin 0 0 the scaled box lands visually centered.
+fn fxl_css(w: f64, h: f64, vw: f64, vh: f64) -> String {
+    let k = (vw / w).min(vh / h);
+    format!(
+        r#"html, body {{ margin: 0; padding: 0; overflow: hidden; }}
+body {{
+    width: {w}px;
+    height: {h}px;
+    transform: scale({k});
+    transform-origin: 0 0;
+    margin-left: {ml}px;
+    margin-top: {mt}px;
+}}"#,
+        w = w,
+        h = h,
+        k = k,
+        ml = (vw - w * k) / 2.0,
+        mt = (vh - h * k) / 2.0,
+    )
+}
+
 fn display_at(
     rc: &Rc<RefCell<Inner>>,
     index: usize,
@@ -597,11 +680,30 @@ fn display_at(
     // Measure the viewport before rendering (the iframe is already laid out).
     let mut styles = String::new();
     inner.stride = 0.0;
-    if inner.flow == Flow::Paginated {
-        let rect = inner.iframe.get_bounding_client_rect();
-        let vw = rect.width().floor() as i32;
-        let vh = rect.height().floor() as i32;
-        inner.last_size = (vw, vh);
+    inner.rtl = false;
+    inner.fxl = inner.book.book().is_pre_paginated(index);
+
+    let rect = inner.iframe.get_bounding_client_rect();
+    let vw = rect.width().floor() as i32;
+    let vh = rect.height().floor() as i32;
+    inner.last_size = (vw, vh);
+
+    if inner.fxl {
+        // Fixed layout wins over the flow setting: scale the page to fit,
+        // never inject column CSS onto pre-paginated content.
+        let viewport = inner
+            .book
+            .book_mut()
+            .load_section(index)
+            .ok()
+            .and_then(|s| s.viewport());
+        if let Some((w, h)) = viewport {
+            if vw > 0 && vh > 0 {
+                styles.push_str(&fxl_css(w, h, vw as f64, vh as f64));
+            }
+        }
+        // No numeric viewport meta: leave the page at natural size.
+    } else if inner.flow == Flow::Paginated {
         let w = vw - 2 * PAD;
         let h = vh - 2 * PAD;
         if w > 0 && h > 0 {

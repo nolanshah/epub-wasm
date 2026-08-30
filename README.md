@@ -98,6 +98,7 @@ fully static — host it anywhere.
 | `toc` | Nested `{ id, href, label, children }`. Hrefs are **normalized archive paths** (+ `#fragment`) — no path math needed |
 | `section_count` / `sections` | Spine length / all section metadata in one call |
 | `direction` | `"rtl"` / `"ltr"` from the spine, if declared |
+| `layout` / `section_viewport(i)` | `"pre-paginated"` for fixed-layout books / a section's `{width, height}` design size from its viewport meta |
 | `get_section(i)` | `{ index, id, href, media_type, linear, properties }` |
 | `get_section_content(i)` | Raw XHTML exactly as stored |
 | `get_section_text(i)` | Plain text, whitespace-collapsed |
@@ -124,6 +125,13 @@ flow, internal-link and TOC navigation. `new Rendition(bytes, containerElement)`
 once locations are generated), `on_error(cb)` (errors from event handlers;
 `console.error` otherwise), `destroy()`. Pagination re-measures on window
 resize and when embedded fonts finish loading.
+
+RTL: `next()`/`prev()` always mean reading order; content computing to
+`direction: rtl` flips the internal paging math automatically, and the demos
+flip arrow keys per the spine's `page-progression-direction`. Fixed-layout
+(`rendition:layout` pre-paginated, incl. per-itemref overrides): sections are
+scaled to fit the viewport from their `<meta name="viewport">` design size —
+column CSS is never applied to FXL content.
 
 ### `JsCfi`
 
@@ -160,8 +168,6 @@ Not implemented yet, in rough priority order:
 
 - **Annotations** — persistent user highlights + notes (the `<mark>`
   injection mechanism from search highlighting is the building block)
-- **RTL & fixed-layout** — `direction` is exposed but not acted on;
-  pre-paginated (`rendition:layout`) books render as reflowable
 - **Font deobfuscation** (IDPF/Adobe schemes)
 - **Streaming ZIP** — the archive is currently fully decompressed into memory
 - **npm packaging** — publish `renderer/pkg` with hand-checked `.d.ts`

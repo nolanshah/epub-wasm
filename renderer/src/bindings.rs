@@ -179,6 +179,31 @@ impl JsBook {
         self.inner.page_progression_direction.clone()
     }
 
+    /// `"pre-paginated"` for fixed-layout books, else `"reflowable"`
+    #[wasm_bindgen(getter)]
+    pub fn layout(&self) -> String {
+        if self.inner.rendition_layout.as_deref() == Some("pre-paginated") {
+            "pre-paginated".to_string()
+        } else {
+            "reflowable".to_string()
+        }
+    }
+
+    /// Fixed-layout design size of a section from its `<meta name="viewport">`:
+    /// `{ width, height }`, or `null` if not declared numerically
+    pub fn section_viewport(&mut self, index: usize) -> Result<JsValue, JsValue> {
+        let section = self.inner.load_section(index).map_err(js_err)?;
+        match section.viewport() {
+            Some((width, height)) => {
+                let obj = js_sys::Object::new();
+                js_sys::Reflect::set(&obj, &"width".into(), &width.into())?;
+                js_sys::Reflect::set(&obj, &"height".into(), &height.into())?;
+                Ok(obj.into())
+            }
+            None => Ok(JsValue::NULL),
+        }
+    }
+
     /// Get section metadata by index
     pub fn get_section(&self, index: usize) -> Result<JsValue, JsValue> {
         let section = self
@@ -317,6 +342,11 @@ impl JsBook {
     /// Access the underlying core book
     pub fn book(&self) -> &Book {
         &self.inner
+    }
+
+    /// Mutable access to the underlying core book
+    pub fn book_mut(&mut self) -> &mut Book {
+        &mut self.inner
     }
 
     pub(crate) fn render_with(&mut self, index: usize, opts: &RenderOptions) -> Result<String, JsValue> {

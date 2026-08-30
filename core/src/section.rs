@@ -113,6 +113,58 @@ impl Section {
     pub fn text_content(&self) -> Option<String> {
         self.content.as_deref().map(crate::search::extract_text)
     }
+
+    /// The fixed-layout design size from `<meta name="viewport">`, if the
+    /// content declares numeric `width`/`height`. Requires loaded content.
+    pub fn viewport(&self) -> Option<(f64, f64)> {
+        parse_viewport(self.content.as_deref()?)
+    }
+}
+
+/// Parse `<meta name="viewport" content="width=W, height=H"/>` with numeric
+/// dimensions; `device-width` and friends yield `None`.
+fn parse_viewport(html: &str) -> Option<(f64, f64)> {
+    let lower = html.to_ascii_lowercase();
+    let mut from = 0;
+
+    while let Some(p) = lower[from..].find("<meta") {
+        let start = from + p;
+        let Some(rel_end) = lower[start..].find('>') else {
+            return None;
+        };
+        let end = start + rel_end;
+        let tag = &lower[start..end];
+        from = end;
+
+        if !tag.contains("name=\"viewport\"") && !tag.contains("name='viewport'") {
+            continue;
+        }
+
+        let cpos = tag.find("content=")?;
+        let rest = &tag[cpos + "content=".len()..];
+        let value = match rest.chars().next()? {
+            q @ ('"' | '\'') => &rest[1..1 + rest[1..].find(q)?],
+            _ => rest.split_whitespace().next()?,
+        };
+
+        let mut width = None;
+        let mut height = None;
+        for part in value.split([',', ';']) {
+            let part = part.trim();
+            if let Some(v) = part.strip_prefix("width=") {
+                width = v.trim().parse::<f64>().ok();
+            } else if let Some(v) = part.strip_prefix("height=") {
+                height = v.trim().parse::<f64>().ok();
+            }
+        }
+
+        return match (width, height) {
+            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some((w, h)),
+            _ => None,
+        };
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -145,6 +197,24 @@ mod tests {
             s.resolve_href("chapter2.xhtml#sec"),
             ("OEBPS/Text/chapter2.xhtml".to_string(), Some("sec".to_string()))
         );
+    }
+
+    #[test]
+    fn viewport_parses_numeric_dimensions_only() {
+        assert_eq!(
+            parse_viewport(r#"<head><meta name="viewport" content="width=400, height=600"/></head>"#),
+            Some((400.0, 600.0))
+        );
+        assert_eq!(
+            parse_viewport(r#"<meta content="height=600;width=400" name='viewport'>"#),
+            Some((400.0, 600.0))
+        );
+        assert_eq!(
+            parse_viewport(r#"<meta name="viewport" content="width=device-width, initial-scale=1.0"/>"#),
+            None
+        );
+        assert_eq!(parse_viewport(r#"<meta charset="utf-8"/>"#), None);
+        assert_eq!(parse_viewport("no meta at all"), None);
     }
 
     #[test]

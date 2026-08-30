@@ -8,3 +8,5 @@ ln -s ../../client-test/index.html .serve/index.html
 ln -s ../../client-test/rendition.html .serve/rendition.html
 ln -s ../../client-test/pkg .serve/pkg
 ln -s ../fixtures/fixture.epub .serve/fixture.epub
+ln -s ../fixtures/fixture-rtl.epub .serve/fixture-rtl.epub
+ln -s ../fixtures/fixture-fxl.epub .serve/fixture-fxl.epub

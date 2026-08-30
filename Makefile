@@ -30,9 +30,9 @@ e2e: e2e-install
 e2e-install:
 	cd e2e && npm install --no-fund --no-audit
 
-# Regenerate the e2e fixture EPUB after editing core/examples/make_fixture.rs
+# Regenerate the e2e fixture EPUBs after editing core/examples/make_fixture.rs
 fixture:
-	cargo run -p epub-reader-core --example make_fixture -- e2e/fixtures/fixture.epub
+	cargo run -p epub-reader-core --example make_fixture -- e2e/fixtures
 
 # Serve the client-side demo
 serve:

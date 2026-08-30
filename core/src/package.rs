@@ -54,6 +54,8 @@ pub struct Package {
     pub ncx_path: Option<String>,
     /// `page-progression-direction` from `<spine>` (`ltr`, `rtl`, `default`)
     pub page_progression_direction: Option<String>,
+    /// `<meta property="rendition:layout">` value (`pre-paginated`, `reflowable`)
+    pub rendition_layout: Option<String>,
 }
 
 /// Local (namespace-stripped) element name as an owned String.
@@ -90,11 +92,14 @@ impl Package {
         let mut ncx_path = None;
         let mut spine_toc_id: Option<String> = None;
         let mut page_progression_direction = None;
+        let mut rendition_layout = None;
 
         let mut buf = Vec::new();
         let mut in_metadata = false;
         let mut current_element: Option<String> = None;
         let mut text_content = String::new();
+        let mut current_meta_property: Option<String> = None;
+        let mut meta_text = String::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -133,6 +138,9 @@ impl Package {
                                     metadata.cover_id = Some(content);
                                 }
                             }
+                            // EPUB3 metadata: <meta property="…">value</meta>
+                            current_meta_property = attr_string(e, b"property")?;
+                            meta_text.clear();
                         }
                         _ if in_metadata => {
                             current_element = Some(name);
@@ -147,6 +155,15 @@ impl Package {
 
                     match name.as_str() {
                         "metadata" => in_metadata = false,
+                        "meta" if in_metadata => {
+                            if let Some(property) = current_meta_property.take() {
+                                let value = meta_text.trim();
+                                if property == "rendition:layout" && !value.is_empty() {
+                                    rendition_layout = Some(value.to_string());
+                                }
+                            }
+                            meta_text.clear();
+                        }
                         _ if in_metadata => {
                             if current_element.as_deref() == Some(name.as_str()) {
                                 let value = text_content.trim().to_string();
@@ -176,8 +193,12 @@ impl Package {
                 }
 
                 Ok(Event::Text(ref e)) => {
-                    if in_metadata && current_element.is_some() {
-                        text_content.push_str(&e.unescape().unwrap_or_default());
+                    if in_metadata {
+                        if current_element.is_some() {
+                            text_content.push_str(&e.unescape().unwrap_or_default());
+                        } else if current_meta_property.is_some() {
+                            meta_text.push_str(&e.unescape().unwrap_or_default());
+                        }
                     }
                 }
 
@@ -208,6 +229,7 @@ impl Package {
             nav_path,
             ncx_path,
             page_progression_direction,
+            rendition_layout,
         })
     }
 }
@@ -360,6 +382,7 @@ mod tests {
     <dc:title id="t">Real Title</dc:title>
     <meta refines="#t" property="title-type">main</meta>
     <meta property="dcterms:modified">2024-01-01T00:00:00Z</meta>
+    <meta property="rendition:layout">pre-paginated</meta>
   </metadata>
   <manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>
   <spine><itemref idref="c1"/></spine>
@@ -368,5 +391,6 @@ mod tests {
         let package = Package::parse(xml).unwrap();
         assert_eq!(package.metadata.title, "Real Title");
         assert_eq!(package.metadata.cover_id, None);
+        assert_eq!(package.rendition_layout, Some("pre-paginated".to_string()));
     }
 }
