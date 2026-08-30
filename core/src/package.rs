@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ pub struct Metadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestItem {
     pub id: String,
+    /// href exactly as written in the OPF (relative to the OPF directory)
     pub href: String,
     pub media_type: String,
     pub properties: Vec<String>,
@@ -47,8 +48,31 @@ pub struct Package {
     pub metadata: Metadata,
     pub manifest: HashMap<String, ManifestItem>,
     pub spine: Vec<SpineItem>,
+    /// href (relative to OPF dir) of the EPUB3 navigation document
     pub nav_path: Option<String>,
+    /// href (relative to OPF dir) of the EPUB2 NCX document
     pub ncx_path: Option<String>,
+    /// `page-progression-direction` from `<spine>` (`ltr`, `rtl`, `default`)
+    pub page_progression_direction: Option<String>,
+}
+
+/// Local (namespace-stripped) element name as an owned String.
+fn local(name: &[u8]) -> String {
+    let name = match name.iter().rposition(|&b| b == b':') {
+        Some(pos) => &name[pos + 1..],
+        None => name,
+    };
+    String::from_utf8_lossy(name).to_string()
+}
+
+fn attr_string(e: &BytesStart, key: &[u8]) -> Result<Option<String>> {
+    for attr in e.attributes() {
+        let attr = attr?;
+        if attr.key.as_ref() == key {
+            return Ok(Some(String::from_utf8_lossy(&attr.value).to_string()));
+        }
+    }
+    Ok(None)
 }
 
 impl Package {
@@ -56,12 +80,16 @@ impl Package {
     pub fn parse(xml: &str) -> Result<Self> {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
+        // Treat `<item/>` and `<item></item>` identically.
+        reader.config_mut().expand_empty_elements = true;
 
         let mut metadata = Metadata::default();
         let mut manifest: HashMap<String, ManifestItem> = HashMap::new();
         let mut spine: Vec<SpineItem> = Vec::new();
         let mut nav_path = None;
         let mut ncx_path = None;
+        let mut spine_toc_id: Option<String> = None;
+        let mut page_progression_direction = None;
 
         let mut buf = Vec::new();
         let mut in_metadata = false;
@@ -71,10 +99,41 @@ impl Package {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let name = local(e.name().as_ref());
 
                     match name.as_str() {
-                        "metadata" | "opf:metadata" => in_metadata = true,
+                        "metadata" => in_metadata = true,
+                        "item" => {
+                            let item = parse_manifest_item(e)?;
+
+                            // EPUB3 navigation document
+                            if item.properties.iter().any(|p| p == "nav") {
+                                nav_path = Some(item.href.clone());
+                            }
+
+                            // EPUB2 NCX (by media type; the spine `toc` attribute is checked below)
+                            if item.media_type == "application/x-dtbncx+xml" && ncx_path.is_none() {
+                                ncx_path = Some(item.href.clone());
+                            }
+
+                            manifest.insert(item.id.clone(), item);
+                        }
+                        "itemref" => {
+                            spine.push(parse_spine_item(e)?);
+                        }
+                        "spine" => {
+                            spine_toc_id = attr_string(e, b"toc")?;
+                            page_progression_direction =
+                                attr_string(e, b"page-progression-direction")?;
+                        }
+                        "meta" if in_metadata => {
+                            // EPUB2 cover: <meta name="cover" content="cover-image-id"/>
+                            if attr_string(e, b"name")?.as_deref() == Some("cover") {
+                                if let Some(content) = attr_string(e, b"content")? {
+                                    metadata.cover_id = Some(content);
+                                }
+                            }
+                        }
                         _ if in_metadata => {
                             current_element = Some(name);
                             text_content.clear();
@@ -84,95 +143,32 @@ impl Package {
                 }
 
                 Ok(Event::End(ref e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let name = local(e.name().as_ref());
 
                     match name.as_str() {
-                        "metadata" | "opf:metadata" => in_metadata = false,
+                        "metadata" => in_metadata = false,
                         _ if in_metadata => {
-                            if let Some(ref elem) = current_element {
-                                match elem.as_str() {
-                                    "dc:title" | "title" => {
-                                        metadata.title = text_content.trim().to_string();
+                            if current_element.as_deref() == Some(name.as_str()) {
+                                let value = text_content.trim().to_string();
+                                match name.as_str() {
+                                    "title" => metadata.title = value,
+                                    "creator" => metadata.creators.push(value),
+                                    "language" => metadata.language = Some(value),
+                                    "identifier" => {
+                                        // Prefer the first identifier (usually the unique-identifier)
+                                        if metadata.identifier.is_none() {
+                                            metadata.identifier = Some(value)
+                                        }
                                     }
-                                    "dc:creator" | "creator" => {
-                                        metadata.creators.push(text_content.trim().to_string());
-                                    }
-                                    "dc:language" | "language" => {
-                                        metadata.language = Some(text_content.trim().to_string());
-                                    }
-                                    "dc:identifier" | "identifier" => {
-                                        metadata.identifier = Some(text_content.trim().to_string());
-                                    }
-                                    "dc:description" | "description" => {
-                                        metadata.description = Some(text_content.trim().to_string());
-                                    }
-                                    "dc:publisher" | "publisher" => {
-                                        metadata.publisher = Some(text_content.trim().to_string());
-                                    }
-                                    "dc:date" | "date" => {
-                                        metadata.date = Some(text_content.trim().to_string());
-                                    }
-                                    "dc:subject" | "subject" => {
-                                        metadata.subjects.push(text_content.trim().to_string());
-                                    }
-                                    "dc:rights" | "rights" => {
-                                        metadata.rights = Some(text_content.trim().to_string());
-                                    }
+                                    "description" => metadata.description = Some(value),
+                                    "publisher" => metadata.publisher = Some(value),
+                                    "date" => metadata.date = Some(value),
+                                    "subject" => metadata.subjects.push(value),
+                                    "rights" => metadata.rights = Some(value),
                                     _ => {}
                                 }
-                            }
-                            current_element = None;
-                            text_content.clear();
-                        }
-                        _ => {}
-                    }
-                }
-
-                Ok(Event::Empty(ref e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-
-                    match name.as_str() {
-                        "item" => {
-                            let item = parse_manifest_item(e)?;
-
-                            // Check for NAV document (EPUB3)
-                            if item.properties.contains(&"nav".to_string()) {
-                                nav_path = Some(item.href.clone());
-                            }
-
-                            // Check for NCX (EPUB2)
-                            if item.media_type == "application/x-dtbncx+xml" {
-                                ncx_path = Some(item.href.clone());
-                            }
-
-                            manifest.insert(item.id.clone(), item);
-                        }
-                        "itemref" => {
-                            let item = parse_spine_item(e)?;
-                            spine.push(item);
-                        }
-                        "meta" if in_metadata => {
-                            // Handle cover meta
-                            let mut name_attr = None;
-                            let mut content_attr = None;
-
-                            for attr in e.attributes() {
-                                let attr = attr?;
-                                match attr.key.as_ref() {
-                                    b"name" => {
-                                        name_attr =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                    b"content" => {
-                                        content_attr =
-                                            Some(String::from_utf8_lossy(&attr.value).to_string());
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if name_attr.as_deref() == Some("cover") {
-                                metadata.cover_id = content_attr;
+                                current_element = None;
+                                text_content.clear();
                             }
                         }
                         _ => {}
@@ -185,11 +181,24 @@ impl Package {
                     }
                 }
 
+                Ok(Event::CData(ref e)) => {
+                    if in_metadata && current_element.is_some() {
+                        text_content.push_str(&String::from_utf8_lossy(e));
+                    }
+                }
+
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(e.into()),
                 _ => {}
             }
             buf.clear();
+        }
+
+        // `<spine toc="ncx">` is the authoritative NCX reference in EPUB2.
+        if let Some(id) = spine_toc_id {
+            if let Some(item) = manifest.get(&id) {
+                ncx_path = Some(item.href.clone());
+            }
         }
 
         Ok(Package {
@@ -198,11 +207,12 @@ impl Package {
             spine,
             nav_path,
             ncx_path,
+            page_progression_direction,
         })
     }
 }
 
-fn parse_manifest_item(e: &quick_xml::events::BytesStart) -> Result<ManifestItem> {
+fn parse_manifest_item(e: &BytesStart) -> Result<ManifestItem> {
     let mut id = String::new();
     let mut href = String::new();
     let mut media_type = String::new();
@@ -238,7 +248,7 @@ fn parse_manifest_item(e: &quick_xml::events::BytesStart) -> Result<ManifestItem
     })
 }
 
-fn parse_spine_item(e: &quick_xml::events::BytesStart) -> Result<SpineItem> {
+fn parse_spine_item(e: &BytesStart) -> Result<SpineItem> {
     let mut idref = String::new();
     let mut id = String::new();
     let mut linear = true;
@@ -309,5 +319,54 @@ mod tests {
         assert_eq!(package.manifest.len(), 2);
         assert_eq!(package.spine.len(), 1);
         assert_eq!(package.nav_path, Some("nav.xhtml".to_string()));
+    }
+
+    #[test]
+    fn parses_prefixed_elements_and_non_self_closing_items() {
+        // Some producers prefix every OPF element with `opf:` and write
+        // `<item></item>` instead of `<item/>`.
+        let xml = r#"<?xml version="1.0"?>
+<opf:package xmlns:opf="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+  <opf:metadata>
+    <dc:title>Prefixed</dc:title>
+    <opf:meta name="cover" content="cover-img"></opf:meta>
+    <dc:identifier id="a">first</dc:identifier>
+    <dc:identifier id="b">second</dc:identifier>
+  </opf:metadata>
+  <opf:manifest>
+    <opf:item id="cover-img" href="cover.jpg" media-type="image/jpeg"></opf:item>
+    <opf:item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"></opf:item>
+    <opf:item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"></opf:item>
+  </opf:manifest>
+  <opf:spine toc="toc" page-progression-direction="rtl">
+    <opf:itemref idref="c1"></opf:itemref>
+  </opf:spine>
+</opf:package>"#;
+
+        let package = Package::parse(xml).unwrap();
+        assert_eq!(package.metadata.title, "Prefixed");
+        assert_eq!(package.metadata.cover_id, Some("cover-img".to_string()));
+        assert_eq!(package.metadata.identifier, Some("first".to_string()));
+        assert_eq!(package.manifest.len(), 3);
+        assert_eq!(package.spine.len(), 1);
+        assert_eq!(package.ncx_path, Some("toc.ncx".to_string()));
+        assert_eq!(package.page_progression_direction, Some("rtl".to_string()));
+    }
+
+    #[test]
+    fn epub3_meta_elements_do_not_clobber_metadata() {
+        let xml = r##"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title id="t">Real Title</dc:title>
+    <meta refines="#t" property="title-type">main</meta>
+    <meta property="dcterms:modified">2024-01-01T00:00:00Z</meta>
+  </metadata>
+  <manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"##;
+
+        let package = Package::parse(xml).unwrap();
+        assert_eq!(package.metadata.title, "Real Title");
+        assert_eq!(package.metadata.cover_id, None);
     }
 }

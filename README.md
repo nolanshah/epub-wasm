@@ -1,187 +1,159 @@
-# epub-reader
+# epub-wasm
 
-A Rust-based EPUB reader library with WASM support, designed as a replacement for epub.js.
-
-## Architecture
+A Rust EPUB parsing and rendering library that compiles to WebAssembly — an
+[epub.js](https://github.com/futurepress/epub.js) replacement where all the
+heavy lifting (ZIP, OPF, TOC, path resolution, resource rewriting, search)
+happens in Rust.
 
 ```
-epub-reader/
-├── core/           # Pure Rust EPUB parsing library
-├── renderer/       # WASM rendering layer
-├── server-test/    # CLI test server
-└── client-test/    # Client-side only SPA
+epub-wasm/
+├── core/           # Pure Rust EPUB parsing (no WASM deps, usable server-side)
+├── renderer/       # WASM bindings: JsBook, Rendition, JsCfi
+├── server-test/    # Axum test server (native core + web UI)
+└── client-test/    # Static SPA demo (upload or ?load= an EPUB in the browser)
 ```
 
-### Core Library (`epub-reader-core`)
+## Quickstart (browser, ~15 lines)
 
-Pure Rust EPUB parsing with no WASM dependencies. Can be used server-side or compiled to WASM.
+```html
+<div id="viewer" style="height: 100vh"></div>
+<script type="module">
+  import init, { JsBook } from './pkg/epub_reader_renderer.js';
+  await init();
 
-**Features:**
-- ZIP archive handling
-- Container.xml parsing
-- OPF parsing (metadata, manifest, spine)
-- NAV (EPUB3) and NCX (EPUB2) TOC parsing
-- CFI (Canonical Fragment Identifier) parsing and generation
-- Full-text search with CFI results
-- Section content loading
+  const bytes = new Uint8Array(await (await fetch('book.epub')).arrayBuffer());
+  const book = new JsBook(bytes);
 
-**Usage (Rust):**
-```rust
-use epub_reader_core::Book;
+  console.log(book.metadata.title, book.toc);
 
-let book = Book::from_path("book.epub")?;
-println!("Title: {}", book.metadata.title);
-println!("Sections: {}", book.section_count());
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'width:100%;height:100%;border:none';
+  document.getElementById('viewer').appendChild(iframe);
 
-// Load section content
-let content = book.section_content(0)?;
+  // Display-ready HTML: images/CSS/fonts become blob URLs, internal links
+  // carry data-epub-section/-fragment attributes, scripts are stripped.
+  iframe.srcdoc = book.render_section(0, { styles: 'body { max-width: 40em; margin: auto }' });
+</script>
 ```
 
-### Renderer (`epub-reader-renderer`)
+Or let `Rendition` manage the iframe, section navigation and internal links
+for you:
 
-WASM-compatible browser rendering layer.
-
-**Features:**
-- iframe-based content isolation
-- CSS column pagination
-- Blob URL resource management
-- Progress/location tracking
-- JavaScript bindings for CDN usage
-
-**Usage (JavaScript):**
-```javascript
-import init, { JsBook } from './pkg/epub_reader_renderer.js';
-
+```js
+import init, { Rendition } from './pkg/epub_reader_renderer.js';
 await init();
-const response = await fetch('book.epub');
-const data = new Uint8Array(await response.arrayBuffer());
 
-const book = new JsBook(data);
-console.log(book.metadata);       // { title, creators, ... }
-console.log(book.toc);            // Table of contents
-console.log(book.section_count);  // Number of sections
-
-const content = book.get_section_content(0);  // HTML content
+const r = new Rendition(bytes, document.getElementById('viewer'));
+r.on_relocated(({ index, href }) => console.log('now at', index, href));
+r.display();
+r.next(); r.prev(); r.display_href(r.toc[0].href);
 ```
 
-## Running
+(Working example: `client-test/rendition.html`.)
 
-### Prerequisites
+## Building
 
 ```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Prerequisites: Rust + wasm-pack (cargo install wasm-pack)
 
-# Install wasm-pack (for building WASM)
-cargo install wasm-pack
+# Native library + test server
+cargo build --release
+
+# WASM package (required before either demo works — pkg/ is not checked in)
+wasm-pack build --release --target web renderer
+cp -r renderer/pkg client-test/pkg   # keep the SPA's copy in sync
+
+# Tests
+cargo test --workspace
 ```
 
-### Build Everything
+## Running the demos
+
+**Test server** (loads an EPUB from disk, serves a reader UI):
 
 ```bash
-cd ebm/epub-reader
-
-# Build core library
-cargo build --release --package epub-reader-core
-
-# Build WASM renderer
-wasm-pack build --target web renderer
-
-# Build test server
-cargo build --release --package epub-reader-server-test
-
-# Copy WASM to client-test directory
-cp -r renderer/pkg client-test/
+./target/release/epub-server-test /path/to/book.epub   # -p PORT (default 3000)
 ```
 
-### Run Tests
+**Client-side SPA** (all parsing happens in the browser):
 
 ```bash
-cargo test --package epub-reader-core
+cd client-test && ./serve.sh    # then open http://localhost:8080
 ```
 
-### Option 1: CLI Test Server
+Upload an EPUB, or deep-link one: `http://localhost:8080/?load=<epub-url>&section=3`
+(the URL must be same-origin or CORS-enabled). The `client-test/` directory is
+fully static — host it anywhere.
 
-A Rust-based server that loads an EPUB from disk and serves it with a web UI.
+## API
 
-```bash
-./target/release/epub-server-test /path/to/book.epub
+### `JsBook`
+
+| Member | Description |
+|---|---|
+| `new JsBook(bytes)` | Parse an EPUB from a `Uint8Array` |
+| `metadata` | `{ title, creators, language, identifier, description, publisher, date, subjects, rights, cover_id }` |
+| `toc` | Nested `{ id, href, label, children }`. Hrefs are **normalized archive paths** (+ `#fragment`) — no path math needed |
+| `section_count` / `sections` | Spine length / all section metadata in one call |
+| `direction` | `"rtl"` / `"ltr"` from the spine, if declared |
+| `get_section(i)` | `{ index, id, href, media_type, linear, properties }` |
+| `get_section_content(i)` | Raw XHTML exactly as stored |
+| `get_section_text(i)` | Plain text, whitespace-collapsed |
+| `render_section(i, opts?)` | **Display-ready HTML** — resources → blob URLs (CSS files have their inner `url()`s rewritten too), internal links → `data-epub-section` / `data-epub-fragment`, external links → `target="_blank"`, scripts stripped. `opts`: `{ styles?, baseStyles?, stripScripts?, resolveLinks? }` |
+| `resolve_href(fromSection, href)` | `{ index, fragment }` or `null` — resolves any link/TOC href |
+| `section_index_for_href(href)` | Archive path, OPF-relative path or bare filename → spine index |
+| `get_resource(href)` / `get_resource_url(href)` | Resource bytes / cached blob URL |
+| `media_type(href)` | MIME type (manifest first, extension fallback) |
+| `get_cover()` / `get_cover_url()` | Cover image bytes / blob URL |
+| `search(query, opts?)` | `[{ section_index, matched_text, excerpt, offset, cfi }]`. `opts`: `{ caseInsensitive?, maxResults?, contextChars? }` (plain object, reusable) |
+| `revoke_resources()` | Release all blob URLs |
+
+### `Rendition`
+
+Minimal reader controller: one iframe, scrolled flow, internal-link and TOC
+navigation. `new Rendition(bytes, containerElement)`, `display()`,
+`display_section(i)`, `display_href(href)`, `next()`, `prev()`, `current_section_index()`,
+`metadata`, `toc`, `search()`, `set_styles(css)`, `on_relocated(cb)`,
+`destroy()`.
+
+### `JsCfi`
+
+`new JsCfi(str)`, `JsCfi.from_spine_index(i)`, `.spine_index`,
+`.character_offset`, `.toString()`, `.compare(other)`.
+
+### Rust (`epub-reader-core`)
+
+```rust
+use epub_reader_core::{Book, SearchOptions};
+
+let mut book = Book::from_path("book.epub")?;
+println!("{} — {} sections", book.metadata.title, book.section_count());
+let html = book.section_content(0)?;
+let text = book.section_text(0)?;
+let hits = book.search("rabbit", &SearchOptions::new())?;
 ```
 
-Options:
-- `-p, --port <PORT>` - Port to run on (default: 3000)
+Handles the messy real world: percent-encoded hrefs, `../` paths,
+namespace-prefixed OPF elements, non-self-closing tags, `<span>` TOC headings,
+NAV→NCX fallback, `<spine toc=…>`, EPUB2 `<meta name="cover">` and EPUB3
+`cover-image`, Unicode-safe search (no panics on multibyte text).
 
-Then open http://localhost:3000
+## Roadmap
 
-### Option 2: Client-Side SPA
+Not implemented yet, in rough priority order:
 
-A static single-page app where you upload an EPUB in the browser. No server needed for EPUB processing.
-
-```bash
-cd client-test
-./serve.sh
-# or: python3 -m http.server 8080
-```
-
-Then open http://localhost:8080
-
-**Static Hosting:** Upload the `client-test/` directory to any static host (GitHub Pages, Netlify, S3, etc.):
-```
-client-test/
-├── index.html
-└── pkg/
-    ├── epub_reader_renderer.js
-    ├── epub_reader_renderer.d.ts
-    └── epub_reader_renderer_bg.wasm
-```
-
-## Viewing Modes
-
-Both the test server and client SPA support two viewing modes:
-
-- **📖 Chapters** - Navigate section-by-section with Prev/Next buttons or arrow keys
-- **📜 Single Page** - All content loaded in one scrollable view with fragment-based navigation
-
-## API Reference
-
-### JsBook (WASM)
-
-| Property/Method | Description |
-|----------------|-------------|
-| `new JsBook(data: Uint8Array)` | Create from EPUB bytes |
-| `metadata` | Book metadata (title, creators, language, etc.) |
-| `toc` | Table of contents as nested array |
-| `section_count` | Number of spine sections |
-| `get_section(index)` | Get section metadata |
-| `get_section_content(index)` | Get section HTML content |
-| `get_resource(href)` | Get embedded resource (images, CSS, fonts) |
-| `get_cover()` | Get cover image data |
-| `search(query, options?)` | Full-text search |
-
-### JsCfi (WASM)
-
-| Property/Method | Description |
-|----------------|-------------|
-| `new JsCfi(cfiString)` | Parse a CFI string |
-| `from_spine_index(index)` | Create CFI for spine position |
-| `spine_index` | Get spine index |
-| `character_offset` | Get character offset |
-| `toString()` | Serialize to CFI string |
-| `compare(other)` | Compare two CFIs (-1, 0, 1) |
-
-## Dependencies
-
-### Core
-- `zip` - EPUB archive handling (deflate only for WASM compat)
-- `quick-xml` - XML parsing
-- `scraper` - HTML parsing
-- `thiserror` - Error handling
-- `serde` - Serialization
-
-### Renderer
-- `wasm-bindgen` - Rust/JS interop
-- `web-sys` - Web API bindings
-- `js-sys` - JavaScript API bindings
+- **Column pagination** — `Rendition` currently renders scrolled flow only;
+  paged flow (CSS columns + measured page counts) is the main missing epub.js
+  feature
+- **CFI text targeting** — search results and locations carry spine-level CFIs
+  only; DOM-path + character-offset generation would enable precise jumps
+- **Locations / progress %** — stable position index across the book
+- **Highlights & annotations** — ranges + overlay rendering
+- **RTL & fixed-layout** — `direction` is exposed but not acted on;
+  pre-paginated (`rendition:layout`) books render as reflowable
+- **Font deobfuscation** (IDPF/Adobe schemes)
+- **Streaming ZIP** — the archive is currently fully decompressed into memory
+- **npm packaging** — publish `renderer/pkg` with hand-checked `.d.ts`
 
 ## License
 

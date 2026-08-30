@@ -1,195 +1,272 @@
-//! Rendition - Main display controller for EPUB content
+//! Rendition - a minimal display controller: one iframe, one section at a
+//! time, scrolled flow. Internal links and TOC hrefs navigate between
+//! sections; a `relocated` callback reports position changes.
+//!
+//! Column pagination is not implemented yet (see README roadmap).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use epub_reader_core::Book;
 use wasm_bindgen::prelude::*;
-use web_sys::{Element, HtmlElement};
+use web_sys::{Element, Event, HtmlElement, HtmlIFrameElement};
 
-use crate::layout::{Layout, LayoutOptions};
-use crate::locations::Locations;
-use crate::view::View;
+use crate::bindings::{js_err, JsBook, RenderOptions};
+
+struct Inner {
+    book: JsBook,
+    container: HtmlElement,
+    iframe: HtmlIFrameElement,
+    current: usize,
+    pending_fragment: Option<String>,
+    styles: Option<String>,
+    on_relocated: Option<js_sys::Function>,
+    onload: Option<Closure<dyn FnMut()>>,
+    onclick: Option<Closure<dyn FnMut(Event)>>,
+}
 
 /// The main EPUB rendition controller
 #[wasm_bindgen]
 pub struct Rendition {
-    /// The book being rendered
-    book: Rc<Book>,
-    /// Container element
-    container: HtmlElement,
-    /// Current section index
-    current_section: usize,
-    /// Current page within section
-    current_page: usize,
-    /// Layout configuration
-    layout: Layout,
-    /// Location tracking
-    locations: Option<Locations>,
-    /// Active view (iframe)
-    view: Option<View>,
+    inner: Rc<RefCell<Inner>>,
 }
 
 #[wasm_bindgen]
 impl Rendition {
-    /// Create a new rendition attached to a container element
+    /// Create a rendition that renders into `container` (an empty block element)
     #[wasm_bindgen(constructor)]
     pub fn new(book_data: &[u8], container: HtmlElement) -> Result<Rendition, JsValue> {
-        let book = Book::from_bytes(book_data.to_vec())
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let book = JsBook::new(book_data)?;
 
-        Ok(Rendition {
-            book: Rc::new(book),
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .ok_or_else(|| js_err("No document"))?;
+
+        let iframe = document
+            .create_element("iframe")?
+            .dyn_into::<HtmlIFrameElement>()?;
+        let style = iframe.style();
+        style.set_property("width", "100%")?;
+        style.set_property("height", "100%")?;
+        style.set_property("border", "none")?;
+        style.set_property("display", "block")?;
+        iframe.set_attribute(
+            "sandbox",
+            "allow-same-origin allow-popups allow-popups-to-escape-sandbox",
+        )?;
+        container.append_child(&iframe)?;
+
+        let inner = Rc::new(RefCell::new(Inner {
+            book,
             container,
-            current_section: 0,
-            current_page: 0,
-            layout: Layout::default(),
-            locations: None,
-            view: None,
-        })
-    }
+            iframe: iframe.clone(),
+            current: 0,
+            pending_fragment: None,
+            styles: None,
+            on_relocated: None,
+            onload: None,
+            onclick: None,
+        }));
 
-    /// Display the book starting at the beginning
-    pub fn display(&mut self) -> Result<(), JsValue> {
-        self.display_section(0)
-    }
+        // Click handler: created once, attached to every loaded document.
+        let click_rc = Rc::clone(&inner);
+        let onclick = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+            let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+                return;
+            };
+            let Ok(Some(link)) = target.closest("a[data-epub-section]") else {
+                return;
+            };
+            event.prevent_default();
+            let Some(index) = link
+                .get_attribute("data-epub-section")
+                .and_then(|s| s.parse::<usize>().ok())
+            else {
+                return;
+            };
+            let fragment = link
+                .get_attribute("data-epub-fragment")
+                .filter(|f| !f.is_empty());
+            let _ = display_at(&click_rc, index, fragment);
+        });
 
-    /// Display a specific section
-    pub fn display_section(&mut self, index: usize) -> Result<(), JsValue> {
-        if index >= self.book.section_count() {
-            return Err(JsValue::from_str("Section index out of bounds"));
-        }
+        // Load handler: wire up clicks, scroll to fragment, notify.
+        let load_rc = Rc::clone(&inner);
+        let onload = Closure::<dyn FnMut()>::new(move || {
+            let (doc, fragment, current, href, callback, click) = {
+                let mut inner = load_rc.borrow_mut();
+                let doc = inner.iframe.content_document();
+                let fragment = inner.pending_fragment.take();
+                let current = inner.current;
+                let href = inner
+                    .book
+                    .book()
+                    .section(current)
+                    .map(|s| s.href.clone())
+                    .unwrap_or_default();
+                let callback = inner.on_relocated.clone();
+                let click = inner
+                    .onclick
+                    .as_ref()
+                    .map(|c| c.as_ref().unchecked_ref::<js_sys::Function>().clone());
+                (doc, fragment, current, href, callback, click)
+            };
 
-        self.current_section = index;
-        self.current_page = 0;
-
-        // Create view if needed
-        if self.view.is_none() {
-            let view = View::create(&self.container)?;
-            self.view = Some(view);
-        }
-
-        // Load and display section content
-        self.render_current_section()
-    }
-
-    /// Navigate to the next page or section
-    pub fn next(&mut self) -> Result<bool, JsValue> {
-        // Try next page in current section
-        if let Some(ref view) = self.view {
-            let total_pages = view.page_count();
-            if self.current_page + 1 < total_pages {
-                self.current_page += 1;
-                view.show_page(self.current_page)?;
-                return Ok(true);
+            if let Some(doc) = doc {
+                if let Some(click) = click {
+                    let _ = doc.add_event_listener_with_callback("click", &click);
+                }
+                if let Some(frag) = fragment {
+                    if let Some(el) = doc.get_element_by_id(&frag) {
+                        el.scroll_into_view();
+                    }
+                } else if let Some(el) = doc.document_element() {
+                    el.set_scroll_top(0);
+                }
             }
+
+            if let Some(cb) = callback {
+                let obj = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(&obj, &"index".into(), &(current as u32).into());
+                let _ = js_sys::Reflect::set(&obj, &"href".into(), &href.into());
+                let _ = cb.call1(&JsValue::NULL, &obj);
+            }
+        });
+
+        iframe.set_onload(Some(onload.as_ref().unchecked_ref()));
+
+        {
+            let mut i = inner.borrow_mut();
+            i.onclick = Some(onclick);
+            i.onload = Some(onload);
         }
 
-        // Try next section
-        if self.current_section + 1 < self.book.section_count() {
-            self.display_section(self.current_section + 1)?;
+        Ok(Rendition { inner })
+    }
+
+    /// Display the first section
+    pub fn display(&self) -> Result<(), JsValue> {
+        display_at(&self.inner, 0, None)
+    }
+
+    /// Display a section by index
+    pub fn display_section(&self, index: usize) -> Result<(), JsValue> {
+        display_at(&self.inner, index, None)
+    }
+
+    /// Display the target of an href (e.g. a TOC entry's `href`)
+    pub fn display_href(&self, href: &str) -> Result<bool, JsValue> {
+        let resolved = {
+            let inner = self.inner.borrow();
+            let book = inner.book.book();
+            let (p, frag) = epub_reader_core::path::split_fragment(href);
+            book.section_index_by_href(p)
+                .map(|i| (i, frag.map(str::to_string)))
+        };
+        match resolved {
+            Some((index, fragment)) => {
+                display_at(&self.inner, index, fragment)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Go to the next section. Returns false at the end of the book.
+    pub fn next(&self) -> Result<bool, JsValue> {
+        let (current, count) = {
+            let inner = self.inner.borrow();
+            (inner.current, inner.book.section_count())
+        };
+        if current + 1 < count {
+            display_at(&self.inner, current + 1, None)?;
             Ok(true)
         } else {
-            Ok(false) // End of book
+            Ok(false)
         }
     }
 
-    /// Navigate to the previous page or section
-    pub fn prev(&mut self) -> Result<bool, JsValue> {
-        // Try previous page in current section
-        if self.current_page > 0 {
-            self.current_page -= 1;
-            if let Some(ref view) = self.view {
-                view.show_page(self.current_page)?;
-            }
-            return Ok(true);
-        }
-
-        // Try previous section
-        if self.current_section > 0 {
-            self.display_section(self.current_section - 1)?;
-            // Go to last page of section
-            if let Some(ref view) = self.view {
-                let last_page = view.page_count().saturating_sub(1);
-                self.current_page = last_page;
-                view.show_page(self.current_page)?;
-            }
+    /// Go to the previous section. Returns false at the start of the book.
+    pub fn prev(&self) -> Result<bool, JsValue> {
+        let current = self.inner.borrow().current;
+        if current > 0 {
+            display_at(&self.inner, current - 1, None)?;
             Ok(true)
         } else {
-            Ok(false) // Beginning of book
+            Ok(false)
         }
     }
 
-    /// Get the current section index
+    /// Index of the section currently displayed
     pub fn current_section_index(&self) -> usize {
-        self.current_section
+        self.inner.borrow().current
     }
 
-    /// Get the current page within the section
-    pub fn current_page(&self) -> usize {
-        self.current_page
+    /// Number of sections
+    #[wasm_bindgen(getter)]
+    pub fn section_count(&self) -> usize {
+        self.inner.borrow().book.section_count()
     }
 
-    /// Get the total number of pages in current section
-    pub fn page_count(&self) -> usize {
-        self.view.as_ref().map(|v| v.page_count()).unwrap_or(0)
+    /// Book metadata (see `JsBook.metadata`)
+    #[wasm_bindgen(getter)]
+    pub fn metadata(&self) -> Result<JsValue, JsValue> {
+        self.inner.borrow().book.metadata()
     }
 
-    /// Set the layout options
-    pub fn set_layout(&mut self, options: LayoutOptions) {
-        self.layout = Layout::from_options(options);
+    /// Table of contents (see `JsBook.toc`)
+    #[wasm_bindgen(getter)]
+    pub fn toc(&self) -> Result<JsValue, JsValue> {
+        self.inner.borrow().book.toc()
     }
 
-    /// Get the book metadata as JSON
-    pub fn metadata_json(&self) -> Result<String, JsValue> {
-        serde_json::to_string(&self.book.metadata)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+    /// Full-text search (see `JsBook.search`)
+    pub fn search(&self, query: &str, options: JsValue) -> Result<JsValue, JsValue> {
+        self.inner.borrow_mut().book.search(query, options)
     }
 
-    /// Get the table of contents as JSON
-    pub fn toc_json(&self) -> Result<String, JsValue> {
-        serde_json::to_string(&self.book.toc)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+    /// CSS injected into every section (fonts, colors, themes). Re-renders
+    /// the current section.
+    pub fn set_styles(&self, css: Option<String>) -> Result<(), JsValue> {
+        let current = {
+            let mut inner = self.inner.borrow_mut();
+            inner.styles = css;
+            inner.current
+        };
+        display_at(&self.inner, current, None)
     }
 
-    fn render_current_section(&mut self) -> Result<(), JsValue> {
-        // Clone data needed for rendering
-        let book = Rc::clone(&self.book);
-        let section_index = self.current_section;
+    /// Callback invoked with `{ index, href }` whenever a section finishes loading
+    pub fn on_relocated(&self, callback: Option<js_sys::Function>) {
+        self.inner.borrow_mut().on_relocated = callback;
+    }
 
-        // We need mutable access to load section
-        // For now, we'll use interior mutability in a real implementation
-        // This is a simplified version that assumes content is pre-loaded
-        let section = book
-            .section(section_index)
-            .ok_or_else(|| JsValue::from_str("Section not found"))?;
-
-        if let Some(ref view) = self.view {
-            // Get content - in real impl, we'd load from archive
-            // For now, show placeholder
-            let content = section.content().unwrap_or("<html><body><p>Loading...</p></body></html>");
-            view.render(content, &self.layout)?;
-        }
-
-        Ok(())
+    /// Remove the iframe, revoke blob URLs and release callbacks
+    pub fn destroy(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.iframe.set_onload(None);
+        let _ = inner.container.remove_child(&inner.iframe);
+        inner.onload = None;
+        inner.onclick = None;
+        inner.on_relocated = None;
+        inner.book.revoke_resources();
     }
 }
 
-impl Rendition {
-    /// Create from a pre-loaded Book (for Rust API)
-    pub fn from_book(book: Book, container: HtmlElement) -> Result<Self, JsValue> {
-        Ok(Rendition {
-            book: Rc::new(book),
-            container,
-            current_section: 0,
-            current_page: 0,
-            layout: Layout::default(),
-            locations: None,
-            view: None,
-        })
+fn display_at(rc: &Rc<RefCell<Inner>>, index: usize, fragment: Option<String>) -> Result<(), JsValue> {
+    let mut inner = rc.borrow_mut();
+
+    if index >= inner.book.section_count() {
+        return Err(js_err(format!("Section {} out of range", index)));
     }
 
-    /// Get a reference to the book
-    pub fn book(&self) -> &Book {
-        &self.book
-    }
+    let opts = RenderOptions {
+        styles: inner.styles.clone(),
+        ..Default::default()
+    };
+    let html = inner.book.render_with(index, &opts)?;
+
+    inner.current = index;
+    inner.pending_fragment = fragment;
+    inner.iframe.set_srcdoc(&html);
+    Ok(())
 }

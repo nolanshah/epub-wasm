@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::package::SpineItem;
+use crate::path;
 
 /// A section of the book (corresponds to a spine item)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,7 +12,8 @@ pub struct Section {
     pub index: usize,
     /// ID from manifest
     pub id: String,
-    /// Relative href to content
+    /// Normalized archive path of the content document
+    /// (e.g. `OEBPS/Text/chapter1.xhtml`)
     pub href: String,
     /// Media type
     pub media_type: String,
@@ -22,6 +24,9 @@ pub struct Section {
     /// Raw content (loaded on demand)
     #[serde(skip)]
     content: Option<String>,
+    /// Plain text extracted from the content (computed on demand)
+    #[serde(skip)]
+    text: Option<String>,
 }
 
 impl Section {
@@ -40,6 +45,7 @@ impl Section {
             linear: spine_item.linear,
             properties: spine_item.properties.clone(),
             content: None,
+            text: None,
         }
     }
 
@@ -51,6 +57,7 @@ impl Section {
     /// Set the content
     pub fn set_content(&mut self, content: String) {
         self.content = Some(content);
+        self.text = None;
     }
 
     /// Get the content if loaded
@@ -60,119 +67,85 @@ impl Section {
 
     /// Take ownership of the content
     pub fn take_content(&mut self) -> Option<String> {
+        self.text = None;
         self.content.take()
     }
 
-    /// Get the base path for resolving relative URLs
+    /// Directory containing this section, with trailing slash (`""` for root)
     pub fn base_path(&self) -> &str {
-        // Get directory part of href
-        match self.href.rfind('/') {
-            Some(pos) => &self.href[..=pos],
-            None => "",
-        }
+        path::dir_of(&self.href)
     }
 
-    /// Resolve a relative URL against this section's base path
+    /// Resolve an href relative to this section into `(archive_path, fragment)`.
+    ///
+    /// External URLs (`http://…`, `data:`, …) are returned unchanged with no fragment.
+    pub fn resolve_href(&self, href: &str) -> (String, Option<String>) {
+        if path::is_external(href) {
+            return (href.to_string(), None);
+        }
+        path::resolve(self.base_path(), href)
+    }
+
+    /// Resolve a relative URL against this section's base path (path only).
     pub fn resolve_url(&self, relative: &str) -> String {
-        if relative.starts_with('/') || relative.contains("://") {
-            return relative.to_string();
-        }
-
-        let base = self.base_path();
-        if base.is_empty() {
-            relative.to_string()
-        } else {
-            normalize_path(&format!("{}{}", base, relative))
-        }
+        self.resolve_href(relative).0
     }
 
-    /// Extract plain text from the XHTML content
+    /// Plain text of the section, with whitespace collapsed. Cached after the
+    /// first call. Returns `None` if content has not been loaded.
+    pub fn text(&mut self) -> Option<&str> {
+        if self.text.is_none() {
+            let content = self.content.as_deref()?;
+            self.text = Some(crate::search::extract_text(content));
+        }
+        self.text.as_deref()
+    }
+
+    /// Extract plain text from the XHTML content (uncached).
     pub fn text_content(&self) -> Option<String> {
-        self.content.as_ref().map(|html| {
-            let document = scraper::Html::parse_document(html);
-            let body_selector = scraper::Selector::parse("body").unwrap();
-
-            if let Some(body) = document.select(&body_selector).next() {
-                body.text().collect::<Vec<_>>().join(" ")
-            } else {
-                // Fallback: get all text
-                document.root_element().text().collect::<Vec<_>>().join(" ")
-            }
-        })
+        self.content.as_deref().map(crate::search::extract_text)
     }
-}
-
-/// Normalize a path by resolving . and .. components
-fn normalize_path(path: &str) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-
-    for part in path.split('/') {
-        match part {
-            "" | "." => continue,
-            ".." => {
-                parts.pop();
-            }
-            _ => parts.push(part),
-        }
-    }
-
-    parts.join("/")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_base_path() {
+    fn section(href: &str) -> Section {
         let spine_item = SpineItem {
             id: "test".to_string(),
             idref: "chapter1".to_string(),
             linear: true,
             properties: vec![],
         };
+        Section::new(0, &spine_item, href.to_string(), "application/xhtml+xml".to_string())
+    }
 
-        let section = Section::new(
-            0,
-            &spine_item,
-            "OEBPS/Text/chapter1.xhtml".to_string(),
-            "application/xhtml+xml".to_string(),
-        );
-
-        assert_eq!(section.base_path(), "OEBPS/Text/");
+    #[test]
+    fn test_base_path() {
+        assert_eq!(section("OEBPS/Text/chapter1.xhtml").base_path(), "OEBPS/Text/");
+        assert_eq!(section("chapter1.xhtml").base_path(), "");
     }
 
     #[test]
     fn test_resolve_url() {
-        let spine_item = SpineItem {
-            id: "test".to_string(),
-            idref: "chapter1".to_string(),
-            linear: true,
-            properties: vec![],
-        };
-
-        let section = Section::new(
-            0,
-            &spine_item,
-            "OEBPS/Text/chapter1.xhtml".to_string(),
-            "application/xhtml+xml".to_string(),
-        );
-
+        let s = section("OEBPS/Text/chapter1.xhtml");
+        assert_eq!(s.resolve_url("../Images/cover.jpg"), "OEBPS/Images/cover.jpg");
+        assert_eq!(s.resolve_url("chapter2.xhtml"), "OEBPS/Text/chapter2.xhtml");
+        assert_eq!(s.resolve_url("https://example.com/x"), "https://example.com/x");
         assert_eq!(
-            section.resolve_url("../Images/cover.jpg"),
-            "OEBPS/Images/cover.jpg"
-        );
-        assert_eq!(
-            section.resolve_url("chapter2.xhtml"),
-            "OEBPS/Text/chapter2.xhtml"
+            s.resolve_href("chapter2.xhtml#sec"),
+            ("OEBPS/Text/chapter2.xhtml".to_string(), Some("sec".to_string()))
         );
     }
 
     #[test]
-    fn test_normalize_path() {
-        assert_eq!(normalize_path("a/b/c"), "a/b/c");
-        assert_eq!(normalize_path("a/b/../c"), "a/c");
-        assert_eq!(normalize_path("a/./b/c"), "a/b/c");
-        assert_eq!(normalize_path("a/b/c/../../d"), "a/d");
+    fn text_is_cached_and_reset_on_new_content() {
+        let mut s = section("a.xhtml");
+        assert!(s.text().is_none());
+        s.set_content("<html><body><p>Hello   \n world</p></body></html>".into());
+        assert_eq!(s.text(), Some("Hello world"));
+        s.set_content("<html><body><p>Other</p></body></html>".into());
+        assert_eq!(s.text(), Some("Other"));
     }
 }

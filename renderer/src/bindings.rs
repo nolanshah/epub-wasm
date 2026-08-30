@@ -1,16 +1,68 @@
-//! JavaScript bindings for CDN/embed usage
+//! JavaScript bindings
 //!
-//! This module provides a JavaScript-friendly API for the EPUB reader
-//! that can be loaded from a CDN and used in vanilla JavaScript applications.
+//! `JsBook` is the plug-and-play API: give it EPUB bytes, get back metadata,
+//! a resolved table of contents, and per-section HTML that is ready to drop
+//! into an iframe (`render_section`). All hrefs it returns are normalized
+//! archive paths, so consumers never have to do path math.
 
+use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use epub_reader_core::{Book, Cfi, Metadata, NavItem, SearchMatch, SearchOptions};
+use epub_reader_core::{path, Book, Cfi, SearchOptions};
+
+use crate::resources::Resources;
+use crate::rewrite::{inject_into_head, rewrite_css, rewrite_html, RefKind, Reference, Replacement};
+
+pub(crate) fn js_err(e: impl std::fmt::Display) -> JsValue {
+    js_sys::Error::new(&e.to_string()).into()
+}
+
+fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
+    let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+    value.serialize(&serializer).map_err(js_err)
+}
+
+fn from_js<T: for<'de> Deserialize<'de> + Default>(value: JsValue) -> Result<T, JsValue> {
+    if value.is_undefined() || value.is_null() {
+        Ok(T::default())
+    } else {
+        serde_wasm_bindgen::from_value(value).map_err(js_err)
+    }
+}
+
+/// Options for `render_section`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RenderOptions {
+    /// Extra CSS appended to the document `<head>`
+    pub styles: Option<String>,
+    /// Include a small default stylesheet (responsive images). Default: true
+    pub base_styles: bool,
+    /// Remove `<script>` elements. Default: true
+    pub strip_scripts: bool,
+    /// Rewrite internal `<a href>` links to `href="#"` with `data-epub-*`
+    /// attributes, and external links to open in a new tab. Default: true
+    pub resolve_links: bool,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            styles: None,
+            base_styles: true,
+            strip_scripts: true,
+            resolve_links: true,
+        }
+    }
+}
+
+const BASE_STYLES: &str = "img, svg, video { max-width: 100%; height: auto; }";
 
 /// JavaScript-friendly wrapper for Book
 #[wasm_bindgen]
 pub struct JsBook {
     inner: Book,
+    resources: Resources,
 }
 
 #[wasm_bindgen]
@@ -18,115 +70,301 @@ impl JsBook {
     /// Load an EPUB from bytes
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8]) -> Result<JsBook, JsValue> {
-        let book = Book::from_bytes(data.to_vec())
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(JsBook { inner: book })
+        let book = Book::from_bytes(data.to_vec()).map_err(js_err)?;
+        Ok(JsBook {
+            inner: book,
+            resources: Resources::new(),
+        })
     }
 
-    /// Get book metadata as JSON
+    /// Book metadata: `{ title, creators, language, identifier, description,
+    /// publisher, date, subjects, rights, cover_id }`
     #[wasm_bindgen(getter)]
     pub fn metadata(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&self.inner.metadata)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        to_js(&self.inner.metadata)
     }
 
-    /// Get table of contents as JSON
+    /// Table of contents as a nested array of `{ id, href, label, children }`.
+    /// `href` is an archive path plus optional `#fragment`; pass it to
+    /// `section_index_for_href` / `resolve_href`.
     #[wasm_bindgen(getter)]
     pub fn toc(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&self.inner.toc)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        to_js(&self.inner.toc)
     }
 
-    /// Get the number of sections
+    /// Number of spine sections
     #[wasm_bindgen(getter)]
     pub fn section_count(&self) -> usize {
         self.inner.section_count()
     }
 
+    /// Metadata for every section: `[{ index, id, href, media_type, linear, properties }]`
+    #[wasm_bindgen(getter)]
+    pub fn sections(&self) -> Result<JsValue, JsValue> {
+        let all: Vec<_> = self.inner.sections().collect();
+        to_js(&all)
+    }
+
+    /// Reading direction declared by the spine (`"ltr"`, `"rtl"`), if any
+    #[wasm_bindgen(getter)]
+    pub fn direction(&self) -> Option<String> {
+        self.inner.page_progression_direction.clone()
+    }
+
     /// Get section metadata by index
     pub fn get_section(&self, index: usize) -> Result<JsValue, JsValue> {
-        let section = self.inner.section(index)
-            .ok_or_else(|| JsValue::from_str("Section not found"))?;
-        serde_wasm_bindgen::to_value(section)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        let section = self
+            .inner
+            .section(index)
+            .ok_or_else(|| js_err(format!("Section {} not found", index)))?;
+        to_js(section)
     }
 
-    /// Get section content by index
+    /// Raw XHTML of a section, exactly as stored in the EPUB
     pub fn get_section_content(&mut self, index: usize) -> Result<String, JsValue> {
-        self.inner.section_content(index)
+        self.inner
+            .section_content(index)
             .map(|s| s.to_string())
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            .map_err(js_err)
     }
 
-    /// Get a resource by href
+    /// Plain text of a section (whitespace collapsed)
+    pub fn get_section_text(&mut self, index: usize) -> Result<String, JsValue> {
+        self.inner
+            .section_text(index)
+            .map(|s| s.to_string())
+            .map_err(js_err)
+    }
+
+    /// Section XHTML ready to display: images, stylesheets, fonts and other
+    /// assets are rewritten to blob URLs; internal links become
+    /// `<a href="#" data-epub-href="…" data-epub-section="N" data-epub-fragment="…">`;
+    /// scripts are removed. Set the result as an iframe's `srcdoc`.
+    ///
+    /// `options`: `{ styles?: string, baseStyles?: boolean, stripScripts?: boolean, resolveLinks?: boolean }`
+    pub fn render_section(&mut self, index: usize, options: JsValue) -> Result<String, JsValue> {
+        let opts: RenderOptions = from_js(options)?;
+        self.render_with(index, &opts)
+    }
+
+    /// Resolve an href (from the TOC, or from a link inside `section_index`)
+    /// to `{ index, fragment }`, or `null` if it is external / not a section.
+    pub fn resolve_href(&self, section_index: usize, href: &str) -> Result<JsValue, JsValue> {
+        match self.inner.resolve_href(section_index, href) {
+            Some((index, fragment)) => {
+                let obj = js_sys::Object::new();
+                js_sys::Reflect::set(&obj, &"index".into(), &(index as u32).into())?;
+                js_sys::Reflect::set(
+                    &obj,
+                    &"fragment".into(),
+                    &fragment.map(JsValue::from).unwrap_or(JsValue::NULL),
+                )?;
+                Ok(obj.into())
+            }
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Section index for an href (archive path, OPF-relative path, or bare
+    /// filename). Fragments are ignored.
+    pub fn section_index_for_href(&self, href: &str) -> Option<usize> {
+        self.inner.section_index_by_href(href)
+    }
+
+    /// Raw bytes of a resource by href (archive path or OPF-relative)
     pub fn get_resource(&self, href: &str) -> Option<Vec<u8>> {
         self.inner.get_resource(href).map(|d| d.to_vec())
     }
 
-    /// Get cover image data
+    /// Blob URL for a resource (cached; revoke with `revoke_resources`)
+    pub fn get_resource_url(&mut self, href: &str) -> Result<Option<String>, JsValue> {
+        let Self { inner, resources } = self;
+        blob_url_for(inner, resources, "", href, 0)
+    }
+
+    /// MIME type for a resource href
+    pub fn media_type(&self, href: &str) -> String {
+        let (p, _) = path::resolve("", href);
+        self.inner.media_type_for(&p)
+    }
+
+    /// Cover image bytes, if the book declares one
     pub fn get_cover(&self) -> Option<Vec<u8>> {
         self.inner.cover_image().map(|d| d.to_vec())
     }
 
-    /// Search the book
-    pub fn search(&mut self, query: &str, options: Option<JsSearchOptions>) -> Result<JsValue, JsValue> {
-        let opts = options.map(|o| o.into()).unwrap_or_default();
-        let matches = self.inner.search(query, &opts)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        serde_wasm_bindgen::to_value(&matches)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+    /// Blob URL of the cover image, if any
+    pub fn get_cover_url(&mut self) -> Result<Option<String>, JsValue> {
+        let Some(p) = self.inner.cover_path() else {
+            return Ok(None);
+        };
+        let Self { inner, resources } = self;
+        blob_url_for(inner, resources, "", &p, 0)
+    }
+
+    /// Full-text search. `options`: `{ caseInsensitive?: boolean, maxResults?: number, contextChars?: number }`.
+    /// Returns `[{ section_index, matched_text, excerpt, offset, cfi }]`.
+    pub fn search(&mut self, query: &str, options: JsValue) -> Result<JsValue, JsValue> {
+        let opts: SearchOptions = from_js(options)?;
+        let matches = self.inner.search(query, &opts).map_err(js_err)?;
+        to_js(&matches)
+    }
+
+    /// Revoke every blob URL this book created. Call when discarding the book.
+    pub fn revoke_resources(&mut self) {
+        self.resources.revoke_all();
     }
 }
 
-/// JavaScript-friendly search options
-#[wasm_bindgen]
-pub struct JsSearchOptions {
-    case_insensitive: bool,
-    max_results: Option<usize>,
-    context_chars: usize,
-}
+impl JsBook {
+    /// Access the underlying core book
+    pub fn book(&self) -> &Book {
+        &self.inner
+    }
 
-#[wasm_bindgen]
-impl JsSearchOptions {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        Self {
-            case_insensitive: true,
-            max_results: None,
-            context_chars: 50,
+    pub(crate) fn render_with(&mut self, index: usize, opts: &RenderOptions) -> Result<String, JsValue> {
+        let content = self.inner.section_content(index).map_err(js_err)?.to_string();
+        let section_dir = self.inner.section(index).unwrap().base_path().to_string();
+
+        let Self { inner, resources } = self;
+        let mut first_err: Option<JsValue> = None;
+
+        let html = rewrite_html(&content, opts.strip_scripts, |r: Reference<'_>| {
+            if r.value.is_empty() {
+                return None;
+            }
+            match r.kind {
+                RefKind::Link => {
+                    if !opts.resolve_links {
+                        return None;
+                    }
+                    if path::is_external(r.value) {
+                        return Some(Replacement::Attrs(vec![
+                            ("href".into(), r.value.into()),
+                            ("target".into(), "_blank".into()),
+                            ("rel".into(), "noopener".into()),
+                        ]));
+                    }
+                    match inner.resolve_href(index, r.value) {
+                        Some((target, fragment)) => {
+                            let target_href = inner.section(target).map(|s| s.href.clone()).unwrap_or_default();
+                            let full = match &fragment {
+                                Some(f) => format!("{}#{}", target_href, f),
+                                None => target_href,
+                            };
+                            Some(Replacement::Attrs(vec![
+                                ("href".into(), "#".into()),
+                                ("data-epub-href".into(), full),
+                                ("data-epub-section".into(), target.to_string()),
+                                ("data-epub-fragment".into(), fragment.unwrap_or_default()),
+                            ]))
+                        }
+                        // Link to a non-spine file (e.g. an image): serve it
+                        None => match blob_url_for(inner, resources, &section_dir, r.value, 0) {
+                            Ok(Some(url)) => Some(Replacement::Attrs(vec![
+                                ("href".into(), url),
+                                ("target".into(), "_blank".into()),
+                            ])),
+                            Ok(None) => None,
+                            Err(e) => {
+                                first_err.get_or_insert(e);
+                                None
+                            }
+                        },
+                    }
+                }
+                RefKind::Resource | RefKind::CssUrl => {
+                    if path::is_external(r.value) || r.value.starts_with('#') {
+                        return None;
+                    }
+                    match blob_url_for(inner, resources, &section_dir, r.value, 0) {
+                        Ok(Some(url)) => Some(Replacement::Value(url)),
+                        Ok(None) => None,
+                        Err(e) => {
+                            first_err.get_or_insert(e);
+                            None
+                        }
+                    }
+                }
+            }
+        });
+
+        if let Some(e) = first_err {
+            return Err(e);
         }
-    }
 
-    #[wasm_bindgen(setter)]
-    pub fn set_case_insensitive(&mut self, value: bool) {
-        self.case_insensitive = value;
-    }
-
-    #[wasm_bindgen(setter)]
-    pub fn set_max_results(&mut self, value: Option<usize>) {
-        self.max_results = value;
-    }
-
-    #[wasm_bindgen(setter)]
-    pub fn set_context_chars(&mut self, value: usize) {
-        self.context_chars = value;
-    }
-}
-
-impl Default for JsSearchOptions {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl From<JsSearchOptions> for SearchOptions {
-    fn from(js: JsSearchOptions) -> Self {
-        SearchOptions {
-            case_insensitive: js.case_insensitive,
-            max_results: js.max_results,
-            context_chars: js.context_chars,
+        let mut head = String::new();
+        if opts.base_styles {
+            head.push_str("<style>");
+            head.push_str(BASE_STYLES);
+            head.push_str("</style>");
         }
+        if let Some(css) = &opts.styles {
+            head.push_str("<style>");
+            head.push_str(css);
+            head.push_str("</style>");
+        }
+
+        Ok(inject_into_head(&html, &head))
     }
+}
+
+/// Resolve `href` against `base_dir`, and return a (cached) blob URL for the
+/// resource it points to. CSS files have their own `url()` references
+/// rewritten first, so fonts and background images inside stylesheets work.
+fn blob_url_for(
+    book: &Book,
+    resources: &mut Resources,
+    base_dir: &str,
+    href: &str,
+    depth: u8,
+) -> Result<Option<String>, JsValue> {
+    let (p, _) = path::resolve(base_dir, href);
+    let archive_path = match book.get_resource(&p) {
+        Some(_) => p,
+        None => {
+            // Maybe OPF-relative
+            let (alt, _) = path::resolve(book.base_path(), href);
+            if book.get_resource(&alt).is_some() {
+                alt
+            } else {
+                return Ok(None);
+            }
+        }
+    };
+
+    if let Some(url) = resources.get(&archive_path) {
+        return Ok(Some(url.to_string()));
+    }
+
+    let data = book.get_resource(&archive_path).unwrap();
+    let mime = book.media_type_for(&archive_path);
+
+    if mime == "text/css" && depth < 3 {
+        let css = String::from_utf8_lossy(data);
+        let css_dir = path::dir_of(&archive_path).to_string();
+        let mut err: Option<JsValue> = None;
+        let rewritten = rewrite_css(&css, &mut |url| {
+            if path::is_external(url) || url.starts_with('#') {
+                return None;
+            }
+            match blob_url_for(book, resources, &css_dir, url, depth + 1) {
+                Ok(v) => v,
+                Err(e) => {
+                    err.get_or_insert(e);
+                    None
+                }
+            }
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        return resources
+            .register(&archive_path, rewritten.as_bytes(), &mime)
+            .map(Some);
+    }
+
+    resources.register(&archive_path, data, &mime).map(Some)
 }
 
 /// JavaScript-friendly CFI wrapper
@@ -140,8 +378,7 @@ impl JsCfi {
     /// Parse a CFI string
     #[wasm_bindgen(constructor)]
     pub fn new(cfi_string: &str) -> Result<JsCfi, JsValue> {
-        let cfi = Cfi::parse(cfi_string)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let cfi = Cfi::parse(cfi_string).map_err(js_err)?;
         Ok(JsCfi { inner: cfi })
     }
 

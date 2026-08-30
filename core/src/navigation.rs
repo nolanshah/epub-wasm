@@ -2,15 +2,19 @@
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{EpubError, Result};
+use crate::path;
 
 /// A navigation item (TOC entry)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavItem {
     pub id: Option<String>,
+    /// Target. After `Book` loads it this is a normalized archive path plus
+    /// optional `#fragment` (e.g. `OEBPS/ch1.xhtml#sec2`); empty for
+    /// heading-only entries.
     pub href: String,
     pub label: String,
     pub children: Vec<NavItem>,
@@ -37,112 +41,166 @@ impl NavItem {
     }
 }
 
+/// Rewrite every href in the tree to a normalized archive path (keeping any
+/// fragment), resolving relative to `base_dir` (the directory of the document
+/// the TOC came from). External URLs are left untouched.
+pub fn resolve_hrefs(items: &mut [NavItem], base_dir: &str) {
+    for item in items {
+        if !item.href.is_empty() && !path::is_external(&item.href) {
+            let (p, frag) = path::resolve(base_dir, &item.href);
+            item.href = match frag {
+                Some(f) => format!("{}#{}", p, f),
+                None => p,
+            };
+        }
+        resolve_hrefs(&mut item.children, base_dir);
+    }
+}
+
 /// Find the TOC nav element using various strategies
-fn find_toc_nav(document: &Html) -> Result<scraper::ElementRef<'_>> {
-    // Strategy 1: Try nav elements and check for epub:type attribute
+fn find_toc_nav(document: &Html) -> Result<ElementRef<'_>> {
     let nav_selector = Selector::parse("nav").unwrap();
+
+    // Strategy 1: nav with epub:type="toc" (may be a space-separated list)
     for nav in document.select(&nav_selector) {
-        // Check for epub:type="toc" attribute
         if let Some(epub_type) = nav.value().attr("epub:type") {
-            if epub_type == "toc" {
-                return Ok(nav);
-            }
-        }
-        // Check for class="toc"
-        if let Some(class) = nav.value().attr("class") {
-            if class.contains("toc") {
-                return Ok(nav);
-            }
-        }
-        // Check for id="toc"
-        if let Some(id) = nav.value().attr("id") {
-            if id.contains("toc") {
+            if epub_type.split_whitespace().any(|t| t == "toc") {
                 return Ok(nav);
             }
         }
     }
 
-    // Strategy 2: Just find first nav with an ol/ul
+    // Strategy 2: class/id hints
     for nav in document.select(&nav_selector) {
-        let list_selector = Selector::parse("ol, ul").unwrap();
+        let hinted = nav
+            .value()
+            .attr("class")
+            .map(|c| c.contains("toc"))
+            .unwrap_or(false)
+            || nav
+                .value()
+                .attr("id")
+                .map(|i| i.contains("toc"))
+                .unwrap_or(false);
+        if hinted {
+            return Ok(nav);
+        }
+    }
+
+    // Strategy 3: first nav with an ol/ul
+    let list_selector = Selector::parse("ol, ul").unwrap();
+    for nav in document.select(&nav_selector) {
         if nav.select(&list_selector).next().is_some() {
             return Ok(nav);
         }
     }
 
-    Err(EpubError::InvalidStructure("No TOC nav element found".to_string()))
+    Err(EpubError::InvalidStructure(
+        "No TOC nav element found".to_string(),
+    ))
 }
 
-/// Parse EPUB3 NAV document (HTML-based)
+/// Parse EPUB3 NAV document (HTML-based). Hrefs are returned as written.
 pub fn parse_nav(html: &str) -> Result<Vec<NavItem>> {
     let document = Html::parse_document(html);
-
-    // Find the TOC nav element - try multiple selector strategies
     let nav = find_toc_nav(&document)?;
 
-    // Find the top-level ol/ul
-    let list_selector = Selector::parse("ol, ul")
-        .map_err(|_| EpubError::InvalidStructure("Invalid selector".to_string()))?;
+    let list_selector = Selector::parse(":scope > ol, :scope > ul").unwrap();
+    let any_list_selector = Selector::parse("ol, ul").unwrap();
 
     let list = nav
         .select(&list_selector)
         .next()
+        .or_else(|| nav.select(&any_list_selector).next())
         .ok_or_else(|| EpubError::InvalidStructure("No list in TOC nav".to_string()))?;
 
     parse_nav_list(&list)
 }
 
-fn parse_nav_list(list: &scraper::ElementRef) -> Result<Vec<NavItem>> {
-    let li_selector =
-        Selector::parse(":scope > li").unwrap_or_else(|_| Selector::parse("li").unwrap());
-    let a_selector = Selector::parse("a").unwrap();
-    let ol_selector = Selector::parse("ol, ul").unwrap();
+fn parse_nav_list(list: &ElementRef) -> Result<Vec<NavItem>> {
+    let li_selector = Selector::parse(":scope > li").unwrap();
+    let direct_a = Selector::parse(":scope > a").unwrap();
+    let direct_span = Selector::parse(":scope > span").unwrap();
+    let nested_list = Selector::parse(":scope > ol, :scope > ul").unwrap();
+    let any_a = Selector::parse("a").unwrap();
 
     let mut items = Vec::new();
 
     for li in list.select(&li_selector) {
-        if let Some(a) = li.select(&a_selector).next() {
-            let href = a.value().attr("href").unwrap_or("").to_string();
-            let label = a.text().collect::<Vec<_>>().join(" ").trim().to_string();
-            let id = a.value().attr("id").map(|s| s.to_string());
+        let nested = li.select(&nested_list).next();
 
-            let mut item = NavItem {
-                id,
-                href,
-                label,
-                children: Vec::new(),
-            };
-
-            // Check for nested list
-            if let Some(nested_list) = li.select(&ol_selector).next() {
-                item.children = parse_nav_list(&nested_list)?;
+        // EPUB3 allows either <a href> or a heading-only <span> as the label.
+        let (href, label, id) = if let Some(a) = li.select(&direct_a).next() {
+            (
+                a.value().attr("href").unwrap_or("").to_string(),
+                text_of(&a),
+                a.value().attr("id").map(str::to_string),
+            )
+        } else if let Some(span) = li.select(&direct_span).next() {
+            (
+                String::new(),
+                text_of(&span),
+                span.value().attr("id").map(str::to_string),
+            )
+        } else if nested.is_none() {
+            // Tolerate wrappers like <li><p><a>…</a></p></li> when there is
+            // no nested list to confuse the lookup.
+            match li.select(&any_a).next() {
+                Some(a) => (
+                    a.value().attr("href").unwrap_or("").to_string(),
+                    text_of(&a),
+                    a.value().attr("id").map(str::to_string),
+                ),
+                None => continue,
             }
+        } else {
+            continue;
+        };
 
-            items.push(item);
-        }
+        let children = match nested {
+            Some(list) => parse_nav_list(&list)?,
+            None => Vec::new(),
+        };
+
+        items.push(NavItem {
+            id,
+            href,
+            label,
+            children,
+        });
     }
 
     Ok(items)
 }
 
-/// Parse EPUB2 NCX document (XML-based)
+fn text_of(el: &ElementRef) -> String {
+    el.text()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Parse EPUB2 NCX document (XML-based). Hrefs are returned as written.
 pub fn parse_ncx(xml: &str) -> Result<Vec<NavItem>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
+    reader.config_mut().expand_empty_elements = true;
 
     let mut items = Vec::new();
     let mut stack: Vec<NavItem> = Vec::new();
     let mut current_text = String::new();
-    let mut current_src = String::new();
     let mut in_text = false;
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let qname = e.name();
+                let name = local_name(qname.as_ref());
 
-                match name.as_str() {
+                match name {
                     "navPoint" => {
                         let mut id = None;
                         for attr in e.attributes().flatten() {
@@ -162,30 +220,24 @@ pub fn parse_ncx(xml: &str) -> Result<Vec<NavItem>> {
                         in_text = true;
                         current_text.clear();
                     }
+                    "content" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"src" {
+                                if let Some(item) = stack.last_mut() {
+                                    item.href = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
 
-            Ok(Event::Empty(ref e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-
-                if name == "content" {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"src" {
-                            current_src = String::from_utf8_lossy(&attr.value).to_string();
-                        }
-                    }
-
-                    if let Some(item) = stack.last_mut() {
-                        item.href = current_src.clone();
-                    }
-                }
-            }
-
             Ok(Event::End(ref e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let qname = e.name();
+                let name = local_name(qname.as_ref());
 
-                match name.as_str() {
+                match name {
                     "navPoint" => {
                         if let Some(item) = stack.pop() {
                             if let Some(parent) = stack.last_mut() {
@@ -198,7 +250,12 @@ pub fn parse_ncx(xml: &str) -> Result<Vec<NavItem>> {
                     "text" => {
                         in_text = false;
                         if let Some(item) = stack.last_mut() {
-                            item.label = current_text.trim().to_string();
+                            // Only the navPoint's own navLabel sets the label;
+                            // a child's label arrives after this item's label
+                            // is already set.
+                            if item.label.is_empty() {
+                                item.label = current_text.trim().to_string();
+                            }
                         }
                     }
                     _ => {}
@@ -219,6 +276,14 @@ pub fn parse_ncx(xml: &str) -> Result<Vec<NavItem>> {
     }
 
     Ok(items)
+}
+
+fn local_name(name: &[u8]) -> &str {
+    let name = match name.iter().rposition(|&b| b == b':') {
+        Some(pos) => &name[pos + 1..],
+        None => name,
+    };
+    std::str::from_utf8(name).unwrap_or("")
 }
 
 #[cfg(test)]
@@ -252,6 +317,42 @@ mod tests {
     }
 
     #[test]
+    fn nav_span_heading_with_nested_list() {
+        // A <span> heading must not steal the first nested <a>.
+        let html = r#"<html><body>
+<nav epub:type="toc"><ol>
+  <li><span>Part One</span>
+    <ol>
+      <li><a href="c1.xhtml">Chapter 1</a></li>
+      <li><a href="c2.xhtml">Chapter 2</a></li>
+    </ol>
+  </li>
+  <li><a href="c3.xhtml">Chapter 3</a></li>
+</ol></nav>
+</body></html>"#;
+
+        let items = parse_nav(html).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "Part One");
+        assert_eq!(items[0].href, "");
+        assert_eq!(items[0].children.len(), 2);
+        assert_eq!(items[0].children[0].href, "c1.xhtml");
+        assert_eq!(items[1].label, "Chapter 3");
+    }
+
+    #[test]
+    fn nav_picks_toc_over_landmarks() {
+        let html = r#"<html><body>
+<nav epub:type="landmarks"><ol><li><a href="cover.xhtml">Cover</a></li></ol></nav>
+<nav epub:type="toc"><ol><li><a href="c1.xhtml">Chapter 1</a></li></ol></nav>
+</body></html>"#;
+
+        let items = parse_nav(html).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "Chapter 1");
+    }
+
+    #[test]
     fn test_parse_ncx() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
@@ -274,6 +375,44 @@ mod tests {
         let items = parse_ncx(xml).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].label, "Chapter 1");
+        assert_eq!(items[0].href, "chapter1.xhtml");
+        assert_eq!(items[1].label, "Chapter 2");
         assert_eq!(items[1].children.len(), 1);
+        assert_eq!(items[1].children[0].label, "Section 2.1");
+        assert_eq!(items[1].children[0].href, "chapter2.xhtml#section1");
+    }
+
+    #[test]
+    fn ncx_with_prefixed_elements_and_non_self_closing_content() {
+        let xml = r#"<ncx:ncx xmlns:ncx="http://www.daisy.org/z3986/2005/ncx/">
+  <ncx:navMap>
+    <ncx:navPoint id="a">
+      <ncx:navLabel><ncx:text>One</ncx:text></ncx:navLabel>
+      <ncx:content src="one.xhtml"></ncx:content>
+    </ncx:navPoint>
+  </ncx:navMap>
+</ncx:ncx>"#;
+
+        let items = parse_ncx(xml).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "One");
+        assert_eq!(items[0].href, "one.xhtml");
+    }
+
+    #[test]
+    fn resolves_hrefs_against_base_dir() {
+        let mut items = vec![NavItem {
+            id: None,
+            href: "../Text/My%20Ch.xhtml#s1".into(),
+            label: "x".into(),
+            children: vec![
+                NavItem::new("ext", "https://example.com"),
+                NavItem::new("heading", ""),
+            ],
+        }];
+        resolve_hrefs(&mut items, "OEBPS/Nav/");
+        assert_eq!(items[0].href, "OEBPS/Text/My Ch.xhtml#s1");
+        assert_eq!(items[0].children[0].href, "https://example.com");
+        assert_eq!(items[0].children[1].href, "");
     }
 }

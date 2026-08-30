@@ -32,7 +32,6 @@ struct Args {
 
 struct AppState {
     epub_data: Vec<u8>,
-    epub_name: String,
     book: Book,
     wasm_js: &'static str,
     wasm_bin: &'static [u8],
@@ -44,11 +43,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the EPUB file
     let epub_data = std::fs::read(&args.epub_path)?;
-    let epub_name = args
-        .epub_path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "book.epub".to_string());
 
     // Validate it's a valid EPUB
     let book = Book::from_bytes(epub_data.clone())?;
@@ -62,7 +56,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState {
         epub_data,
-        epub_name,
         book,
         wasm_js,
         wasm_bin,

@@ -7,9 +7,10 @@ use crate::archive::Archive;
 use crate::cfi::Cfi;
 use crate::container;
 use crate::error::{EpubError, Result};
-use crate::navigation::{parse_nav, parse_ncx, NavItem};
+use crate::navigation::{parse_nav, parse_ncx, resolve_hrefs, NavItem};
 use crate::package::{ManifestItem, Metadata, Package, SpineItem};
-use crate::search::{search_content, SearchMatch, SearchOptions};
+use crate::path;
+use crate::search::{search_text, SearchMatch, SearchOptions};
 use crate::section::Section;
 
 /// Main EPUB book structure
@@ -18,16 +19,22 @@ pub struct Book {
     pub metadata: Metadata,
     /// Spine items (reading order)
     pub spine: Vec<SpineItem>,
-    /// Manifest items (all resources)
+    /// Manifest items (all resources), keyed by id. Hrefs are as written in
+    /// the OPF (relative to the OPF directory); use [`Book::manifest_path`]
+    /// for archive paths.
     pub manifest: HashMap<String, ManifestItem>,
-    /// Table of contents
+    /// Table of contents. Hrefs are normalized archive paths (+ `#fragment`).
     pub toc: Vec<NavItem>,
+    /// `page-progression-direction` from the spine (`ltr`, `rtl`), if declared
+    pub page_progression_direction: Option<String>,
     /// Sections (loaded on demand)
     sections: Vec<Section>,
     /// The archive containing all files
     archive: Archive,
-    /// Base path for resolving relative URLs (directory containing OPF)
+    /// Base path for resolving relative URLs (directory containing OPF, with trailing slash)
     base_path: String,
+    /// Archive path -> manifest id
+    path_to_id: HashMap<String, String>,
 }
 
 impl Book {
@@ -47,57 +54,82 @@ impl Book {
     fn from_archive(archive: Archive) -> Result<Self> {
         // Parse container.xml to find OPF path
         let container_xml = archive.get_file_string(container::container_path())?;
-        let opf_path = container::parse_container(&container_xml)?;
+        let opf_path = path::normalize(&path::percent_decode(&container::parse_container(
+            &container_xml,
+        )?));
 
-        // Get base path (directory containing OPF)
-        let base_path = match opf_path.rfind('/') {
-            Some(pos) => format!("{}/", &opf_path[..pos]),
-            None => String::new(),
-        };
+        // Base path (directory containing OPF)
+        let base_path = path::dir_of(&opf_path).to_string();
 
         // Parse OPF
         let opf_xml = archive.get_file_string(&opf_path)?;
         let package = Package::parse(&opf_xml)?;
 
-        // Parse TOC (try NAV first, then NCX)
-        let toc = if let Some(ref nav_path) = package.nav_path {
-            let full_path = format!("{}{}", base_path, nav_path);
-            let nav_html = archive.get_file_string(&full_path)?;
-            parse_nav(&nav_html).unwrap_or_default()
-        } else if let Some(ref ncx_path) = package.ncx_path {
-            let full_path = format!("{}{}", base_path, ncx_path);
-            let ncx_xml = archive.get_file_string(&full_path)?;
-            parse_ncx(&ncx_xml).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Archive path -> manifest id lookup
+        let path_to_id: HashMap<String, String> = package
+            .manifest
+            .values()
+            .map(|item| (path::resolve(&base_path, &item.href).0, item.id.clone()))
+            .collect();
+
+        // Parse TOC: NAV (EPUB3) first, fall back to NCX (EPUB2).
+        let toc = Self::load_toc(&archive, &base_path, &package);
 
         // Build sections from spine
         let sections: Vec<Section> = package
             .spine
             .iter()
-            .enumerate()
-            .filter_map(|(i, spine_item)| {
+            .filter_map(|spine_item| {
                 let manifest_item = package.manifest.get(&spine_item.idref)?;
-                let href = format!("{}{}", base_path, manifest_item.href);
-                Some(Section::new(
-                    i,
-                    spine_item,
-                    href,
-                    manifest_item.media_type.clone(),
-                ))
+                let href = path::resolve(&base_path, &manifest_item.href).0;
+                Some((spine_item, href, manifest_item.media_type.clone()))
+            })
+            .enumerate()
+            .map(|(i, (spine_item, href, media_type))| {
+                Section::new(i, spine_item, href, media_type)
             })
             .collect();
+
+        if sections.is_empty() {
+            return Err(EpubError::InvalidStructure(
+                "Spine references no manifest items".to_string(),
+            ));
+        }
 
         Ok(Book {
             metadata: package.metadata,
             spine: package.spine,
             manifest: package.manifest,
             toc,
+            page_progression_direction: package.page_progression_direction,
             sections,
             archive,
             base_path,
+            path_to_id,
         })
+    }
+
+    fn load_toc(archive: &Archive, base_path: &str, package: &Package) -> Vec<NavItem> {
+        let try_load = |href: &str, parse: fn(&str) -> Result<Vec<NavItem>>| {
+            let full_path = path::resolve(base_path, href).0;
+            let xml = archive.get_file_string(&full_path).ok()?;
+            let mut items = parse(&xml).ok()?;
+            resolve_hrefs(&mut items, path::dir_of(&full_path));
+            Some(items)
+        };
+
+        package
+            .nav_path
+            .as_deref()
+            .and_then(|p| try_load(p, parse_nav))
+            .filter(|items| !items.is_empty())
+            .or_else(|| {
+                package
+                    .ncx_path
+                    .as_deref()
+                    .and_then(|p| try_load(p, parse_ncx))
+            })
+            .unwrap_or_default()
     }
 
     /// Get the number of sections (spine items)
@@ -136,14 +168,30 @@ impl Book {
         Ok(self.sections[index].content().unwrap())
     }
 
-    /// Get a resource by href (relative to book base)
-    pub fn get_resource(&self, href: &str) -> Option<&[u8]> {
-        // First try with base path
-        if let Some(data) = self.archive.get_file(&format!("{}{}", self.base_path, href)) {
-            return Some(data);
+    /// Get the plain text of a section, whitespace-collapsed (loading if necessary)
+    pub fn section_text(&mut self, index: usize) -> Result<&str> {
+        self.load_section(index)?;
+        Ok(self.sections[index].text().unwrap())
+    }
+
+    /// Resolve an href to an archive path. Tries it as archive-absolute first,
+    /// then relative to the OPF directory. Percent-encoding and `../` are handled.
+    fn resource_path(&self, href: &str) -> Option<String> {
+        let (absolute, _) = path::resolve("", href);
+        if self.archive.has_file(&absolute) {
+            return Some(absolute);
         }
-        // Try as absolute path
-        self.archive.get_file(href)
+        let (relative, _) = path::resolve(&self.base_path, href);
+        if self.archive.has_file(&relative) {
+            return Some(relative);
+        }
+        None
+    }
+
+    /// Get a resource by href (archive path, or relative to the OPF directory)
+    pub fn get_resource(&self, href: &str) -> Option<&[u8]> {
+        let p = self.resource_path(href)?;
+        self.archive.get_file(&p)
     }
 
     /// Get a resource by manifest ID
@@ -152,46 +200,116 @@ impl Book {
         self.get_resource(&item.href)
     }
 
+    /// Archive path of a manifest item
+    pub fn manifest_path(&self, id: &str) -> Option<String> {
+        let item = self.manifest.get(id)?;
+        Some(path::resolve(&self.base_path, &item.href).0)
+    }
+
+    /// Manifest item for an archive path
+    pub fn manifest_item_for_path(&self, archive_path: &str) -> Option<&ManifestItem> {
+        let id = self.path_to_id.get(archive_path)?;
+        self.manifest.get(id)
+    }
+
+    /// MIME type for an archive path: from the manifest if declared there,
+    /// otherwise guessed from the extension.
+    pub fn media_type_for(&self, archive_path: &str) -> String {
+        match self.manifest_item_for_path(archive_path) {
+            Some(item) if !item.media_type.is_empty() => item.media_type.clone(),
+            _ => path::mime_type_from_extension(archive_path).to_string(),
+        }
+    }
+
+    /// Resolve an href that appears inside a section's content to
+    /// `(archive_path, fragment)`; `None` if the href is external.
+    pub fn resolve_from_section(
+        &self,
+        section_index: usize,
+        href: &str,
+    ) -> Option<(String, Option<String>)> {
+        let section = self.section(section_index)?;
+        if path::is_external(href) {
+            return None;
+        }
+        let (mut p, frag) = section.resolve_href(href);
+        if p.is_empty() {
+            p = section.href.clone(); // "#fragment" refers to the same document
+        }
+        Some((p, frag))
+    }
+
+    /// Resolve an href inside a section to the resource bytes it points to.
+    pub fn resource_from_section(&self, section_index: usize, href: &str) -> Option<(String, &[u8])> {
+        let (p, _) = self.resolve_from_section(section_index, href)?;
+        let data = self.archive.get_file(&p)?;
+        Some((p, data))
+    }
+
     /// Get the cover image data if available
     pub fn cover_image(&self) -> Option<&[u8]> {
-        // Try cover_id from metadata
-        if let Some(ref cover_id) = self.metadata.cover_id {
-            if let Some(data) = self.get_resource_by_id(cover_id) {
-                return Some(data);
-            }
-        }
+        self.cover_path().and_then(|p| self.archive.get_file(&p))
+    }
 
-        // Try to find item with cover-image property
+    /// Archive path of the cover image, if any
+    pub fn cover_path(&self) -> Option<String> {
+        // EPUB3: item with the cover-image property
         for item in self.manifest.values() {
-            if item.properties.contains(&"cover-image".to_string()) {
-                if let Some(data) = self.get_resource(&item.href) {
-                    return Some(data);
-                }
+            if item.properties.iter().any(|p| p == "cover-image") {
+                return Some(path::resolve(&self.base_path, &item.href).0);
             }
         }
 
-        None
+        // EPUB2: <meta name="cover" content="id"/>
+        if let Some(ref cover_id) = self.metadata.cover_id {
+            if let Some(p) = self.manifest_path(cover_id) {
+                return Some(p);
+            }
+            // Some producers put the href in `content` instead of the id
+            if let Some(p) = self.resource_path(cover_id) {
+                return Some(p);
+            }
+        }
+
+        // Heuristic: a manifest image whose id or href mentions "cover"
+        self.manifest
+            .values()
+            .filter(|item| item.media_type.starts_with("image/"))
+            .find(|item| {
+                item.id.to_ascii_lowercase().contains("cover")
+                    || item.href.to_ascii_lowercase().contains("cover")
+            })
+            .map(|item| path::resolve(&self.base_path, &item.href).0)
     }
 
     /// Search the entire book
     pub fn search(&mut self, query: &str, options: &SearchOptions) -> Result<Vec<SearchMatch>> {
         let mut all_matches = Vec::new();
 
+        if query.is_empty() {
+            return Ok(all_matches);
+        }
+
         for i in 0..self.sections.len() {
-            // Load section content
-            let content = self.section_content(i)?.to_string();
+            let text = match self.section_text(i) {
+                Ok(t) => t,
+                // A single unreadable section shouldn't abort the whole search
+                Err(_) => continue,
+            };
 
-            // Search this section
-            let section_matches = search_content(&content, query, i, options);
-            all_matches.extend(section_matches);
-
-            // Check max results
-            if let Some(max) = options.max_results {
-                if all_matches.len() >= max {
-                    all_matches.truncate(max);
-                    break;
-                }
+            let remaining = options
+                .max_results
+                .map(|max| max.saturating_sub(all_matches.len()));
+            if remaining == Some(0) {
+                break;
             }
+
+            let section_opts = SearchOptions {
+                max_results: remaining,
+                ..options.clone()
+            };
+
+            all_matches.extend(search_text(text, query, i, &section_opts));
         }
 
         Ok(all_matches)
@@ -221,36 +339,70 @@ impl Book {
         }
     }
 
-    /// Find a TOC item by href
+    /// Find a TOC item by href (fragment-insensitive)
     pub fn find_toc_item(&self, href: &str) -> Option<&NavItem> {
-        fn find_in_items<'a>(items: &'a [NavItem], href: &str) -> Option<&'a NavItem> {
+        fn find_in_items<'a>(items: &'a [NavItem], target: &str) -> Option<&'a NavItem> {
             for item in items {
-                // Check if href matches (ignoring fragment)
-                let item_href = item.href.split('#').next().unwrap_or(&item.href);
-                let target_href = href.split('#').next().unwrap_or(href);
-
-                if item_href == target_href || item.href == href {
+                let (item_path, _) = path::split_fragment(&item.href);
+                if item_path == target || item.href == target {
                     return Some(item);
                 }
-
-                if let Some(found) = find_in_items(&item.children, href) {
+                if let Some(found) = find_in_items(&item.children, target) {
                     return Some(found);
                 }
             }
             None
         }
 
-        find_in_items(&self.toc, href)
+        let target = self.section_index_by_href(href).map(|i| self.sections[i].href.clone());
+        let target = target.as_deref().unwrap_or(href);
+        find_in_items(&self.toc, target)
     }
 
-    /// Get section index by href
-    pub fn section_index_by_href(&self, href: &str) -> Option<usize> {
-        let normalized = href.split('#').next().unwrap_or(href);
+    /// Section index for an archive path (exact match, fragment ignored)
+    pub fn section_index_by_path(&self, archive_path: &str) -> Option<usize> {
+        let (p, _) = path::split_fragment(archive_path);
+        self.sections.iter().position(|s| s.href == p)
+    }
 
-        self.sections.iter().position(|s| {
-            let section_href = s.href.split('#').next().unwrap_or(&s.href);
-            section_href.ends_with(normalized) || normalized.ends_with(section_href)
-        })
+    /// Section index for an href. Accepts an archive path, a path relative to
+    /// the OPF directory, or (as a last resort) a bare filename.
+    pub fn section_index_by_href(&self, href: &str) -> Option<usize> {
+        let (raw, _) = path::split_fragment(href);
+
+        let (absolute, _) = path::resolve("", raw);
+        if let Some(i) = self.section_index_by_path(&absolute) {
+            return Some(i);
+        }
+
+        let (relative, _) = path::resolve(&self.base_path, raw);
+        if let Some(i) = self.section_index_by_path(&relative) {
+            return Some(i);
+        }
+
+        // Fallback: filename match (unique only)
+        let filename = absolute.rsplit('/').next()?;
+        if filename.is_empty() {
+            return None;
+        }
+        let mut candidates = self
+            .sections
+            .iter()
+            .filter(|s| s.href.rsplit('/').next() == Some(filename));
+        let first = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        Some(first.index)
+    }
+
+    /// Resolve an href found inside `section_index` (a TOC entry, an `<a href>`)
+    /// to `(section_index, fragment)`. Returns `None` for external links or
+    /// targets that are not spine items.
+    pub fn resolve_href(&self, section_index: usize, href: &str) -> Option<(usize, Option<String>)> {
+        let (p, frag) = self.resolve_from_section(section_index, href)?;
+        let idx = self.section_index_by_path(&p)?;
+        Some((idx, frag))
     }
 
     /// Get an iterator over all sections
@@ -271,9 +423,14 @@ impl Book {
         flatten(&self.toc, &mut result);
         result
     }
-}
 
-#[cfg(test)]
-mod tests {
-    // Integration tests would go here with actual EPUB files
+    /// The archive path of the OPF directory (with trailing slash, or empty)
+    pub fn base_path(&self) -> &str {
+        &self.base_path
+    }
+
+    /// All file paths in the archive
+    pub fn archive_paths(&self) -> impl Iterator<Item = &str> {
+        self.archive.list_files()
+    }
 }

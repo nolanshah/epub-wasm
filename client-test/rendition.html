@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rendition Example</title>
+    <style>
+        * { margin: 0; box-sizing: border-box; }
+        body { height: 100vh; display: flex; flex-direction: column; font-family: system-ui, sans-serif; }
+        header { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 1rem; border-bottom: 1px solid #eee; }
+        header button { padding: 0.35rem 0.9rem; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+        header button:hover { border-color: #111; }
+        #status { font-size: 0.8rem; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #viewer { flex: 1; }
+    </style>
+</head>
+<body>
+    <header>
+        <button id="prev">← Prev</button>
+        <button id="next">Next →</button>
+        <span id="status">loading…</span>
+    </header>
+    <div id="viewer"></div>
+
+    <!-- The whole reader in ~20 lines: Rendition manages the iframe,
+         section navigation and internal links. -->
+    <script type="module">
+        import init, { Rendition } from './pkg/epub_reader_renderer.js';
+        await init();
+
+        const params = new URLSearchParams(location.search);
+        const url = params.get('load') ?? 'book.epub';
+        const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+
+        const r = new Rendition(bytes, document.getElementById('viewer'));
+        r.set_styles('body { max-width: 40em; margin: auto; padding: 2rem; font-family: Georgia, serif; line-height: 1.6 }');
+        r.on_relocated(({ index, href }) => {
+            document.getElementById('status').textContent =
+                `${r.metadata.title} — section ${index + 1}/${r.section_count} (${href})`;
+        });
+
+        const section = parseInt(params.get('section') ?? '', 10);
+        if (!isNaN(section)) r.display_section(section); else r.display();
+
+        document.getElementById('prev').onclick = () => r.prev();
+        document.getElementById('next').onclick = () => r.next();
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') r.prev();
+            if (e.key === 'ArrowRight') r.next();
+        });
+    </script>
+</body>
+</html>
